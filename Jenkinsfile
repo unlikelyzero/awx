@@ -1,12 +1,9 @@
 pipeline {
   agent {
-    node {
       docker {
         image 'maven:3-alpine'
         args '-v /awx_devel:/awx_devel'
       }
-    }
-    
   }
   stages {
     stage('pre_ci') {
