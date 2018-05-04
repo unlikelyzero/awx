@@ -1,7 +1,10 @@
 pipeline {
   agent {
     node {
-      label 'jenkins-jx-base'
+      docker {
+        image 'maven:3-alpine'
+        args '-v /awx_devel:/awx_devel'
+      }
     }
     
   }
