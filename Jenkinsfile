@@ -1,7 +1,7 @@
 pipeline {
   agent {
     node {
-      label 'python'
+      label 'jenkins-jx-base'
     }
     
   }
