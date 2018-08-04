@@ -13,6 +13,9 @@ from awx.main.migrations import _save_password_keys as save_password_keys
 from django.conf import settings
 from django.apps import apps
 
+# DRF
+from rest_framework.exceptions import ValidationError
+
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
@@ -111,6 +114,51 @@ def test_create_v1_rbac_check(get, post, project, credential, net_credential, ra
     base_kwargs.pop('cloud_credential')
     base_kwargs['network_credential'] = net_credential.pk
     post(reverse('api:job_template_list', kwargs={'version': 'v1'}), base_kwargs, rando, expect=403)
+
+
+# TODO: remove as each field tested has support removed
+@pytest.mark.django_db
+def test_jt_deprecated_summary_fields(
+        project, inventory,
+        machine_credential, net_credential, vault_credential,
+        mocker):
+    jt = JobTemplate.objects.create(
+        project=project,
+        inventory=inventory,
+        playbook='helloworld.yml'
+    )
+
+    class MockView:
+        kwargs = {}
+        request = None
+
+    class MockRequest:
+        version = 'v1'
+        user = None
+
+    view = MockView()
+    request = MockRequest()
+    view.request = request
+    serializer = JobTemplateSerializer(instance=jt, context={'view': view, 'request': request})
+
+    for kwargs in [{}, {'pk': 1}]:  # detail vs. list view
+        for version in ['v1', 'v2']:
+            view.kwargs = kwargs
+            request.version = version
+            sf = serializer.get_summary_fields(jt)
+            assert 'credential' not in sf
+            assert 'vault_credential' not in sf
+
+    jt.credentials.add(machine_credential, net_credential, vault_credential)
+
+    view.kwargs = {'pk': 1}
+    for version in ['v1', 'v2']:
+        request.version = version
+        sf = serializer.get_summary_fields(jt)
+        assert 'credential' in sf
+        assert sf['credential']  # not empty dict
+        assert 'vault_credential' in sf
+        assert sf['vault_credential']
 
 
 @pytest.mark.django_db
@@ -577,17 +625,31 @@ def test_save_survey_passwords_on_migration(job_template_with_survey_passwords):
 
 
 @pytest.mark.django_db
-def test_job_template_custom_virtualenv(get, patch, organization_factory, job_template_factory):
+@pytest.mark.parametrize('access', ["superuser", "admin", "peon"])
+def test_job_template_custom_virtualenv(get, patch, organization_factory, job_template_factory, alice, access):
     objs = organization_factory("org", superusers=['admin'])
     jt = job_template_factory("jt", organization=objs.organization,
                               inventory='test_inv', project='test_proj').job_template
 
+    user = alice
+    if access == "superuser":
+        user = objs.superusers.admin
+    elif access == "admin":
+        jt.admin_role.members.add(alice)
+    else:
+        jt.read_role.members.add(alice)
+
     with TemporaryDirectory(dir=settings.BASE_VENV_PATH) as temp_dir:
-        admin = objs.superusers.admin
         os.makedirs(os.path.join(temp_dir, 'bin', 'activate'))
         url = reverse('api:job_template_detail', kwargs={'pk': jt.id})
-        patch(url, {'custom_virtualenv': temp_dir}, user=admin, expect=200)
-        assert get(url, user=admin).data['custom_virtualenv'] == os.path.join(temp_dir, '')
+
+        if access == "peon":
+            patch(url, {'custom_virtualenv': temp_dir}, user=user, expect=403)
+            assert 'custom_virtualenv' not in get(url, user=user)
+            assert JobTemplate.objects.get(pk=jt.id).custom_virtualenv is None
+        else:
+            patch(url, {'custom_virtualenv': temp_dir}, user=user, expect=200)
+            assert get(url, user=user).data['custom_virtualenv'] == os.path.join(temp_dir, '')
 
 
 @pytest.mark.django_db
@@ -602,3 +664,29 @@ def test_job_template_invalid_custom_virtualenv(get, patch, organization_factory
     assert resp.data['custom_virtualenv'] == [
         '/foo/bar is not a valid virtualenv in {}'.format(settings.BASE_VENV_PATH)
     ]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('value', ["", None])
+def test_job_template_unset_custom_virtualenv(get, patch, organization_factory,
+                                              job_template_factory, value):
+    objs = organization_factory("org", superusers=['admin'])
+    jt = job_template_factory("jt", organization=objs.organization,
+                              inventory='test_inv', project='test_proj').job_template
+
+    url = reverse('api:job_template_detail', kwargs={'pk': jt.id})
+    resp = patch(url, {'custom_virtualenv': value}, user=objs.superusers.admin, expect=200)
+    assert resp.data['custom_virtualenv'] is None
+
+
+@pytest.mark.django_db
+def test_callback_disallowed_null_inventory(project):
+    jt = JobTemplate.objects.create(
+        name='test-jt', inventory=None,
+        ask_inventory_on_launch=True,
+        project=project, playbook='helloworld.yml')
+    serializer = JobTemplateSerializer(jt)
+    assert serializer.instance == jt
+    with pytest.raises(ValidationError) as exc:
+        serializer.validate({'host_config_key': 'asdfbasecfeee'})
+    assert 'Cannot enable provisioning callback without an inventory set' in str(exc)

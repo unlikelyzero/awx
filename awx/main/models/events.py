@@ -2,11 +2,13 @@ import datetime
 import logging
 
 from django.conf import settings
-from django.db import models
+from django.db import models, DatabaseError
 from django.utils.dateparse import parse_datetime
+from django.utils.text import Truncator
 from django.utils.timezone import utc
 from django.utils.translation import ugettext_lazy as _
 from django.utils.encoding import force_text
+import six
 
 from awx.api.versioning import reverse
 from awx.main.fields import JSONField
@@ -15,9 +17,27 @@ from awx.main.utils import ignore_inventory_computed_fields
 
 analytics_logger = logging.getLogger('awx.analytics.job_events')
 
+logger = logging.getLogger('awx.main.models.events')
+
 
 __all__ = ['JobEvent', 'ProjectUpdateEvent', 'AdHocCommandEvent',
            'InventoryUpdateEvent', 'SystemJobEvent']
+
+
+def sanitize_event_keys(kwargs, valid_keys):
+    # Sanity check: Don't honor keys that we don't recognize.
+    for key in kwargs.keys():
+        if key not in valid_keys:
+            kwargs.pop(key)
+
+    # Truncate certain values over 1k
+    for key in [
+        'play', 'role', 'task', 'playbook'
+    ]:
+        if isinstance(kwargs.get(key), six.string_types):
+            if len(kwargs[key]) > 1024:
+                kwargs[key] = Truncator(kwargs[key]).chars(1024)
+
 
 
 class BasePlaybookEvent(CreatedModifiedModel):
@@ -235,12 +255,6 @@ class BasePlaybookEvent(CreatedModifiedModel):
             if res.get('changed', False):
                 self.changed = True
                 updated_fields.add('changed')
-            # If we're not in verbose mode, wipe out any module arguments.
-            invocation = res.get('invocation', None)
-            if isinstance(invocation, dict) and self.job_verbosity == 0 and 'module_args' in invocation:
-                event_data['res']['invocation']['module_args'] = ''
-                self.event_data = event_data
-                updated_fields.add('event_data')
         if self.event == 'playbook_on_stats':
             try:
                 failures_dict = event_data.get('failures', {})
@@ -261,7 +275,7 @@ class BasePlaybookEvent(CreatedModifiedModel):
         return updated_fields
 
     @classmethod
-    def create_from_data(self, **kwargs):
+    def create_from_data(cls, **kwargs):
         pk = None
         for key in ('job_id', 'project_update_id'):
             if key in kwargs:
@@ -283,12 +297,8 @@ class BasePlaybookEvent(CreatedModifiedModel):
         except (KeyError, ValueError):
             kwargs.pop('created', None)
 
-        # Sanity check: Don't honor keys that we don't recognize.
-        for key in kwargs.keys():
-            if key not in self.VALID_KEYS:
-                kwargs.pop(key)
-
-        job_event = self.objects.create(**kwargs)
+        sanitize_event_keys(kwargs, cls.VALID_KEYS)
+        job_event = cls.objects.create(**kwargs)
         analytics_logger.info('Event data saved.', extra=dict(python_objects=dict(job_event=job_event)))
         return job_event
 
@@ -329,7 +339,10 @@ class BasePlaybookEvent(CreatedModifiedModel):
 
                 hostnames = self._hostnames()
                 self._update_host_summary_from_stats(hostnames)
-                self.job.inventory.update_computed_fields()
+                try:
+                    self.job.inventory.update_computed_fields()
+                except DatabaseError:
+                    logger.exception('Computed fields database error saving event {}'.format(self.pk))
 
 
 
@@ -447,6 +460,9 @@ class JobEvent(BasePlaybookEvent):
 
     def _update_host_summary_from_stats(self, hostnames):
         with ignore_inventory_computed_fields():
+            if not self.job or not self.job.inventory:
+                logger.info('Event {} missing job or inventory, host summaries not updated'.format(self.pk))
+                return
             qs = self.job.inventory.hosts.filter(name__in=hostnames)
             job = self.job
             for host in hostnames:
@@ -549,7 +565,7 @@ class BaseCommandEvent(CreatedModifiedModel):
         return u'%s @ %s' % (self.get_event_display(), self.created.isoformat())
 
     @classmethod
-    def create_from_data(self, **kwargs):
+    def create_from_data(cls, **kwargs):
         # Convert the datetime for the event's creation
         # appropriately, and include a time zone for it.
         #
@@ -563,12 +579,14 @@ class BaseCommandEvent(CreatedModifiedModel):
         except (KeyError, ValueError):
             kwargs.pop('created', None)
 
-        # Sanity check: Don't honor keys that we don't recognize.
-        for key in kwargs.keys():
-            if key not in self.VALID_KEYS:
-                kwargs.pop(key)
+        sanitize_event_keys(kwargs, cls.VALID_KEYS)
+        return cls.objects.create(**kwargs)
 
-        return self.objects.create(**kwargs)
+    def get_event_display(self):
+        '''
+        Needed for __unicode__
+        '''
+        return self.event
 
 
 class AdHocCommandEvent(BaseCommandEvent):

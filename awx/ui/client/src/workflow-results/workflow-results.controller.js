@@ -84,9 +84,9 @@ export default ['workflowData', 'workflowResultsService', 'workflowDataOptions',
             // set up a read only code mirror for extra vars
             $scope.variables = ParseVariableString($scope.workflow.extra_vars);
             $scope.parseType = 'yaml';
-            ParseTypeChange({ scope: $scope,
-                field_id: 'pre-formatted-variables',
-                readOnly: true });
+            $scope.varsTooltip= i18n._('Read only view of extra variables added to the workflow.');
+            $scope.varsLabel = i18n._('Extra Variables');
+
 
             // Click binding for the expand/collapse button on the standard out log
             $scope.stdoutFullScreen = false;
@@ -194,6 +194,16 @@ export default ['workflowData', 'workflowResultsService', 'workflowDataOptions',
             // Update the jobs spawned by the workflow:
             if(data.hasOwnProperty('workflow_job_id') &&
                 parseInt(data.workflow_job_id, 10) === parseInt($scope.workflow.id,10)){
+
+                    // This check ensures that the workflow status icon doesn't get stuck in
+                    // the waiting state due to the UI missing the initial socket message.  This
+                    // can happen if the GET request on the workflow job returns "waiting" and
+                    // the sockets aren't established yet so we miss the event that indicates
+                    // the workflow job has moved into a running state.
+                    if (!_.includes(['running', 'successful', 'failed', 'error'], $scope.workflow.status)){
+                        $scope.workflow.status = 'running';
+                        runTimeElapsedTimer = workflowResultsService.createOneSecondTimer(moment(), updateWorkflowJobElapsedTimer);
+                    }
 
                     WorkflowService.updateStatusOfNode({
                         treeData: $scope.treeData,

@@ -16,7 +16,11 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
             ({ modal } = scope[scope.ns]);
 
             scope.$watch('vm.promptData.triggerModalOpen', () => {
+
+                vm.actionButtonClicked = false;
                 if(vm.promptData && vm.promptData.triggerModalOpen) {
+
+                    vm.promptDataClone = _.cloneDeep(vm.promptData);
 
                     vm.steps = {
                         inventory: {
@@ -50,68 +54,86 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
 
                     credentialType.http.get()
                     .then( (response) => {
-                        vm.promptData.prompts.credentials.credentialTypes = {};
-                        vm.promptData.prompts.credentials.credentialTypeOptions = [];
+                        vm.promptDataClone.prompts.credentials.credentialTypes = {};
+                        vm.promptDataClone.prompts.credentials.credentialTypeOptions = [];
+                        let machineCredTypeId = null;
                         response.data.results.forEach((credentialTypeRow => {
-                            vm.promptData.prompts.credentials.credentialTypes[credentialTypeRow.id] = credentialTypeRow.kind;
+                            vm.promptDataClone.prompts.credentials.credentialTypes[credentialTypeRow.id] = credentialTypeRow.kind;
                             if(credentialTypeRow.kind.match(/^(cloud|net|ssh|vault)$/)) {
                                 if(credentialTypeRow.kind === 'ssh') {
-                                    vm.promptData.prompts.credentials.credentialKind = credentialTypeRow.id.toString();
+                                    machineCredTypeId = credentialTypeRow.id;
+                                    vm.promptDataClone.prompts.credentials.credentialKind = credentialTypeRow.id.toString();
                                 }
-                                vm.promptData.prompts.credentials.credentialTypeOptions.push({
+                                vm.promptDataClone.prompts.credentials.credentialTypeOptions.push({
                                     name: credentialTypeRow.name,
                                     value: credentialTypeRow.id
                                 });
                             }
                         }));
 
-                        vm.promptData.prompts.inventory.templateDefault = _.has(vm, 'promptData.launchConf.defaults.inventory') ? vm.promptData.launchConf.defaults.inventory : null;
-                        vm.promptData.prompts.credentials.templateDefault = _.has(vm, 'promptData.launchConf.defaults.credentials') ? angular.copy(vm.promptData.launchConf.defaults.credentials) : [];
-                        vm.promptData.prompts.credentials.passwordsNeededToStart = vm.promptData.launchConf.passwords_needed_to_start;
-                        vm.promptData.prompts.credentials.passwords = {};
+                        vm.promptDataClone.prompts.credentials.passwords = {};
 
-                        vm.promptData.prompts.credentials.value.forEach((credential) => {
-                            if (credential.passwords_needed && credential.passwords_needed.length > 0) {
-                                credential.passwords_needed.forEach(passwordNeeded => {
-                                    let credPassObj = {
-                                        id: credential.id,
-                                        name: credential.name
-                                    };
+                        if(vm.promptDataClone.launchConf.passwords_needed_to_start) {
+                            let machineCredPassObj = null;
+                            vm.promptDataClone.launchConf.passwords_needed_to_start.forEach((passwordNeeded) => {
+                                if (passwordNeeded === "ssh_password" ||
+                                    passwordNeeded === "become_password" ||
+                                    passwordNeeded === "ssh_key_unlock"
+                                ) {
+                                    if (!machineCredPassObj) {
+                                        vm.promptDataClone.prompts.credentials.value.forEach((defaultCredential) => {
+                                            if (defaultCredential.kind && defaultCredential.kind === "ssh") {
+                                                machineCredPassObj = {
+                                                    id: defaultCredential.id,
+                                                    name: defaultCredential.name
+                                                };
+                                            } else if (defaultCredential.passwords_needed) {
+                                                defaultCredential.passwords_needed.forEach((neededPassword) => {
+                                                    if (neededPassword === passwordNeeded) {
+                                                        machineCredPassObj = {
+                                                            id: defaultCredential.id,
+                                                            name: defaultCredential.name
+                                                        };
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
 
-                                    if(passwordNeeded === "ssh_password") {
-                                        vm.promptData.prompts.credentials.passwords.ssh = credPassObj;
+                                    vm.promptDataClone.prompts.credentials.passwords[passwordNeeded] = angular.copy(machineCredPassObj);
+                                } else if (passwordNeeded.startsWith("vault_password")) {
+                                    let vault_id = null;
+                                    if (passwordNeeded.includes('.')) {
+                                        vault_id = passwordNeeded.split(/\.(.+)/)[1];
                                     }
-                                    if(passwordNeeded === "become_password") {
-                                        vm.promptData.prompts.credentials.passwords.become = credPassObj;
+
+                                    if (!vm.promptDataClone.prompts.credentials.passwords.vault) {
+                                        vm.promptDataClone.prompts.credentials.passwords.vault = [];
                                     }
-                                    if(passwordNeeded === "ssh_key_unlock") {
-                                        vm.promptData.prompts.credentials.passwords.ssh_key_unlock = credPassObj;
-                                    }
-                                    if(passwordNeeded.startsWith("vault_password")) {
-                                        if(passwordNeeded.includes('.')) {
-                                            credPassObj.vault_id = passwordNeeded.split(/\.(.+)/)[1];
+
+                                    // Loop across the default credentials to find the name of the
+                                    // credential that requires a password
+                                    vm.promptDataClone.prompts.credentials.value.forEach((defaultCredential) => {
+                                        if (vm.promptDataClone.prompts.credentials.credentialTypes[defaultCredential.credential_type] === "vault") {
+                                            let defaultCredVaultId = defaultCredential.vault_id || _.get(defaultCredential, 'inputs.vault_id') || null;
+                                            if (defaultCredVaultId === vault_id) {
+                                                vm.promptDataClone.prompts.credentials.passwords.vault.push({
+                                                    id: defaultCredential.id,
+                                                    name: defaultCredential.name,
+                                                    vault_id: defaultCredVaultId
+                                                });
+                                            }
                                         }
+                                    });
+                                }
+                            });
+                        }
 
-                                        if(!vm.promptData.prompts.credentials.passwords.vault) {
-                                            vm.promptData.prompts.credentials.passwords.vault = [];
-                                        }
+                        vm.promptDataClone.credentialTypeMissing = [];
 
-                                        vm.promptData.prompts.credentials.passwords.vault.push(credPassObj);
-                                    }
-                                });
+                        vm.promptDataClone.prompts.variables.ignore = vm.promptDataClone.launchConf.ignore_ask_variables;
 
-                            }
-                        });
-
-                        vm.promptData.prompts.variables.ignore = vm.promptData.launchConf.ignore_ask_variables;
-                        vm.promptData.prompts.verbosity.templateDefault = vm.promptData.launchConf.defaults.verbosity;
-                        vm.promptData.prompts.jobType.templateDefault = vm.promptData.launchConf.defaults.job_type;
-                        vm.promptData.prompts.limit.templateDefault = vm.promptData.launchConf.defaults.limit;
-                        vm.promptData.prompts.tags.templateDefault = vm.promptData.launchConf.defaults.job_tags;
-                        vm.promptData.prompts.skipTags.templateDefault = vm.promptData.launchConf.defaults.skip_tags;
-                        vm.promptData.prompts.diffMode.templateDefault = vm.promptData.launchConf.defaults.diff_mode;
-
-                        if(vm.promptData.launchConf.ask_inventory_on_launch) {
+                        if(vm.promptDataClone.launchConf.ask_inventory_on_launch) {
                             vm.steps.inventory.includeStep = true;
                             vm.steps.inventory.tab = {
                                 _active: true,
@@ -119,7 +141,7 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
                             };
                             order++;
                         }
-                        if(vm.promptData.launchConf.ask_credential_on_launch || (vm.promptData.launchConf.passwords_needed_to_start && vm.promptData.launchConf.passwords_needed_to_start.length > 0)) {
+                        if(vm.promptDataClone.launchConf.ask_credential_on_launch || (vm.promptDataClone.launchConf.passwords_needed_to_start && vm.promptDataClone.launchConf.passwords_needed_to_start.length > 0)) {
                             vm.steps.credential.includeStep = true;
                             vm.steps.credential.tab = {
                                 _active: order === 1 ? true : false,
@@ -128,7 +150,7 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
                             };
                             order++;
                         }
-                        if(vm.promptData.launchConf.ask_verbosity_on_launch || vm.promptData.launchConf.ask_job_type_on_launch || vm.promptData.launchConf.ask_limit_on_launch || vm.promptData.launchConf.ask_tags_on_launch || vm.promptData.launchConf.ask_skip_tags_on_launch || (vm.promptData.launchConf.ask_variables_on_launch && !vm.promptData.launchConf.ignore_ask_variables) || vm.promptData.launchConf.ask_diff_mode_on_launch) {
+                        if(vm.promptDataClone.launchConf.ask_verbosity_on_launch || vm.promptDataClone.launchConf.ask_job_type_on_launch || vm.promptDataClone.launchConf.ask_limit_on_launch || vm.promptDataClone.launchConf.ask_tags_on_launch || vm.promptDataClone.launchConf.ask_skip_tags_on_launch || (vm.promptDataClone.launchConf.ask_variables_on_launch && !vm.promptDataClone.launchConf.ignore_ask_variables) || vm.promptDataClone.launchConf.ask_diff_mode_on_launch) {
                             vm.steps.other_prompts.includeStep = true;
                             vm.steps.other_prompts.tab = {
                                 _active: order === 1 ? true : false,
@@ -137,7 +159,7 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
                             };
                             order++;
                         }
-                        if(vm.promptData.launchConf.survey_enabled) {
+                        if(vm.promptDataClone.launchConf.survey_enabled) {
                             vm.steps.survey.includeStep = true;
                             vm.steps.survey.tab = {
                                 _active: order === 1 ? true : false,
@@ -149,6 +171,12 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
                         vm.steps.preview.tab.order = order;
                         modal.show('PROMPT');
                         vm.promptData.triggerModalOpen = false;
+
+                        modal.onClose = () => {
+                            scope.$emit('launchModalOpen', false);
+                        };
+
+                        scope.$emit('launchModalOpen', true);
                     })
                     .catch(({data, status}) => {
                         ProcessErrors(scope, data, status, null, {
@@ -174,6 +202,13 @@ export default [ 'Rest', 'GetBasePath', 'ProcessErrors', 'CredentialTypeModel', 
         };
 
         vm.finish = () => {
+            // Disable the action button to prevent double clicking
+            vm.actionButtonClicked = true;
+
+            _.forEach(vm.promptDataClone, (value, key) => {
+                vm.promptData[key] = value;
+            });
+
             vm.promptData.triggerModalOpen = false;
             if(vm.onFinish) {
                 vm.onFinish();

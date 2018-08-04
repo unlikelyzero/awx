@@ -14,14 +14,15 @@ const user_type_options = [
 
 export default ['$scope', '$rootScope', '$stateParams', 'UserForm', 'Rest',
     'ProcessErrors', 'GetBasePath', 'Wait', 'CreateSelect2',
-    '$state', 'i18n',
+    '$state', 'i18n', 'resolvedModels',
     function($scope, $rootScope, $stateParams, UserForm, Rest, ProcessErrors,
-    GetBasePath, Wait, CreateSelect2, $state, i18n) {
+    GetBasePath, Wait, CreateSelect2, $state, i18n, models) {
 
         for (var i = 0; i < user_type_options.length; i++) {
             user_type_options[i].label = i18n._(user_type_options[i].label);
         }
 
+        const { me } = models;
         var form = UserForm,
             master = {},
             id = $stateParams.user_id,
@@ -30,6 +31,9 @@ export default ['$scope', '$rootScope', '$stateParams', 'UserForm', 'Rest',
         init();
 
         function init() {
+            $scope.canEdit = me.get('summary_fields.user_capabilities.edit');
+            $scope.isOrgAdmin = me.get('related.admin_of_organizations.count') > 0;
+            $scope.isCurrentlyLoggedInUser = (parseInt(id) === $rootScope.current_user.id);
             $scope.hidePagination = false;
             $scope.hideSmartSearch = false;
             $scope.user_type_options = user_type_options;
@@ -67,9 +71,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'UserForm', 'Rest',
                     });
 
                     $scope.$watch('user_obj.summary_fields.user_capabilities.edit', function(val) {
-                        if (val === false) {
-                            $scope.canAdd = false;
-                        }
+                        $scope.canAdd = (val === false) ? false : true;
                     });
 
                     setScopeFields(data);
@@ -187,10 +189,11 @@ export default ['$scope', '$rootScope', '$stateParams', 'UserForm', 'Rest',
             }
         };
 
-        $scope.clearPWConfirm = function(fld) {
+        $scope.clearPWConfirm = function() {
             // If password value changes, make sure password_confirm must be re-entered
-            $scope[fld] = '';
-            $scope[form.name + '_form'][fld].$setValidity('awpassmatch', false);
+            $scope.password_confirm = '';
+            let passValidity = (!$scope.password || $scope.password === '') ? true : false;
+            $scope[form.name + '_form'].password_confirm.$setValidity('awpassmatch', passValidity);
             $rootScope.flashMessage = null;
         };
     }

@@ -72,10 +72,6 @@ table, tbody {
     border-left: 5px solid @list-row-select-bord;
 }
 
-.List-tableRow--selected > :first-child {
-    padding-left: 10px;
-}
-
 .List-tableRow--disabled {
     .List-tableCell, .List-tableCell * {
         color: @b7grey;
@@ -95,6 +91,25 @@ table, tbody {
         color: @default-err;
         font-size: 11px;
         text-transform: uppercase;
+    }
+}
+
+.List-tableRow--invalid {
+    height: 40px;
+}
+
+.List-tableRow--invalidBar {
+    align-items: center;
+    border-left: solid @at-space-2x @at-color-error;
+    color: @at-white;
+    display: flex;
+    height: 100%;
+    justify-content: center;
+    position: relative;
+
+    i {
+        position: absolute;
+        left: -7px;
     }
 }
 
@@ -205,6 +220,7 @@ table, tbody {
 }
 
 .List-actions {
+    align-items: center;
     display: flex;
     margin-bottom: -34px;
 }
@@ -218,10 +234,6 @@ table, tbody {
 
 .List-auxActionStream {
     width: 200px;
-}
-
-.List-action:not(.ng-hide) ~ .List-action:not(.ng-hide) {
-    margin-left: 20px;
 }
 
 .List-buttonSubmit {
@@ -239,6 +251,8 @@ table, tbody {
     background-color: @btn-bg;
     color: @btn-txt;
     border-color: @b7grey;
+    height: 30px;
+    line-height: 14px;
 }
 
 .List-buttonDefault:hover,
@@ -387,6 +401,11 @@ table, tbody {
     max-width: 164px;
 }
 
+.List-staticColumn--invalidBar {
+    width: 10px;
+    padding-right: 0px!important;
+}
+
 .List-staticColumnAdjacent {
     padding-left: 10px!important;
 }
@@ -443,16 +462,6 @@ table, tbody {
 .List-dropdownSuccess:focus {
     color: @submit-button-text;
     background-color: @submit-button-bg-hov;
-}
-
-.List-dropdownCarat {
-    display: inline-block;
-    width: 0;
-    height: 0;
-    vertical-align: middle;
-    border-top: 4px dashed;
-    border-right: 4px solid transparent;
-    border-left: 4px solid transparent;
 }
 
 .List-infoCell {

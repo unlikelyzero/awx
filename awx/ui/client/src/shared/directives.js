@@ -75,12 +75,8 @@ angular.module('AWDirectives', ['RestServices', 'Utilities'])
         require: 'ngModel',
         restrict: 'A',
         link: function(scope, element, attrs, ngModel) {
-            ngModel.$parsers.push(function(value) {
-                return '' + value;
-            });
-            ngModel.$formatters.push(function(value) {
-                return parseFloat(value);
-            });
+            ngModel.$parsers.push(value => value.toFixed(2));
+            ngModel.$formatters.push(value => parseFloat(value));
         }
     };
 })
@@ -501,7 +497,7 @@ function(ConfigurationUtils, i18n, $rootScope) {
 }])
 
 // lookup   Validate lookup value against API
-.directive('awlookup', ['Rest', 'GetBasePath', '$q', function(Rest, GetBasePath, $q) {
+.directive('awlookup', ['Rest', 'GetBasePath', '$q', '$state', function(Rest, GetBasePath, $q, $state) {
     return {
         require: 'ngModel',
         link: function(scope, elm, attrs, fieldCtrl) {
@@ -668,7 +664,15 @@ function(ConfigurationUtils, i18n, $rootScope) {
                                 query += '&cloud=true&role_level=use_role';
                                 break;
                             case 'organization':
-                                query += '&role_level=admin_role';
+                                if ($state.current.name.includes('inventories')) {
+                                    query += '&role_level=inventory_admin_role';
+                                } else if ($state.current.name.includes('templates.editWorkflowJobTemplate')) {
+                                    query += '&role_level=workflow_admin_role';
+                                } else if ($state.current.name.includes('projects')) {
+                                    query += '&role_level=project_admin_role';
+                                } else {
+                                    query += '&role_level=admin_role';
+                                }
                                 break;
                             case 'inventory_script':
                                 query += '&role_level=admin_role&organization=' + scope.$resolve.inventoryData.summary_fields.organization.id;
@@ -1243,31 +1247,29 @@ function(ConfigurationUtils, i18n, $rootScope) {
     };
 }])
 
-.directive('awRequireMultiple', [function() {
+.directive('awRequireMultiple', ['Empty', function(Empty) {
     return {
         require: 'ngModel',
         link: function postLink(scope, element, attrs, ngModel) {
             // Watch for changes to the required attribute
-            attrs.$observe('required', function(value) {
-                if(value) {
-                    ngModel.$validators.required = function (value) {
-                        if(angular.isArray(value)) {
-                            if(value.length === 0) {
-                                return false;
-                            }
-                            else {
-                                return (!value[0] || value[0] === "") ? false : true;
-                            }
-                        }
-                        else {
-                            return (!value || value === "") ? false : true;
-                        }
-                    };
-                }
-                else {
-                    delete ngModel.$validators.required;
-                }
+            attrs.$observe('required', function() {
+                ngModel.$validate();
             });
+
+            ngModel.$validators.multipleSelect = function (modelValue) {
+                if(attrs.required) {
+                    if(angular.isArray(modelValue)) {
+                        // Checks to make sure at least one value in the array
+                        return _.some(modelValue, function(arrayVal) {
+                            return !Empty(arrayVal);
+                        });
+                    } else {
+                        return !Empty(modelValue);
+                    }
+                } else {
+                    return true;
+                }
+            };
         }
     };
 }]);

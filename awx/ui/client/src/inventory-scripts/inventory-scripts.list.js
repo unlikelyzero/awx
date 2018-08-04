@@ -38,8 +38,8 @@ export default ['i18n', function(i18n){
                 mode: 'all', // One of: edit, select, all
                 ngClick: 'addCustomInv()',
                 awToolTip: i18n._('Create a new custom inventory'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: 'canAdd'
             }
         },
@@ -61,9 +61,9 @@ export default ['i18n', function(i18n){
                 label: i18n._('Copy'),
                 ngClick: 'copyCustomInv(inventory_script)',
                 "class": 'btn-danger btn-xs',
-                awToolTip: i18n._('Copy inventory scruot'),
+                awToolTip: i18n._('Copy inventory script'),
                 dataPlacement: 'top',
-                ngShow: 'inventory_script.summary_fields.user_capabilities.edit'
+                ngShow: 'inventory_script.summary_fields.user_capabilities.copy'
             },
             view: {
                 ngClick: "editCustomInv(inventory_script.id)",

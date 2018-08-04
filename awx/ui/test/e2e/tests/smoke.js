@@ -124,7 +124,7 @@ module.exports = {
         inventories.waitForElementNotVisible('div.spinny');
     },
     'create host': client => {
-        const addHost = './/span[text()="+ ADD HOST"]';
+        const addHost = '.hostsList #button-add';
 
         client.expect.element('#hosts_tab').enabled;
         client.expect.element('#hosts_tab').css('opacity').equal('1');
@@ -136,11 +136,10 @@ module.exports = {
 
         client.expect.element('#hosts_tab').css('background-color').contain('132, 137, 146');
 
-        client.useXpath();
+        client.useCss();
         client.waitForElementVisible(addHost);
         client.expect.element(addHost).enabled;
         client.click(addHost);
-        client.useCss();
 
         client.waitForElementVisible('#host_name');
         client.sendKeys('#host_name', 'localhost');
@@ -161,16 +160,7 @@ module.exports = {
         const credentials = client.page.credentials();
         const { details } = credentials.section.add.section;
 
-        credentials.section.navigation.waitForElementVisible('@credentials');
-        credentials.section.navigation.expect.element('@credentials').enabled;
-        credentials.section.navigation.click('@credentials');
-
-        credentials.waitForElementVisible('div.spinny');
-        credentials.waitForElementNotVisible('div.spinny');
-
-        credentials.section.list.waitForElementVisible('@add');
-        credentials.section.list.expect.element('@add').enabled;
-        credentials.section.list.click('@add');
+        client.navigateTo(`${credentials.url()}/add`);
 
         details.waitForElementVisible('@save');
         details.clearAndSelectType('Vault');
@@ -186,16 +176,7 @@ module.exports = {
         credentials.waitForElementVisible('div.spinny');
         credentials.waitForElementNotVisible('div.spinny');
 
-        credentials.section.navigation.waitForElementVisible('@credentials');
-        credentials.section.navigation.expect.element('@credentials').enabled;
-        credentials.section.navigation.click('@credentials');
-
-        credentials.waitForElementVisible('div.spinny');
-        credentials.waitForElementNotVisible('div.spinny');
-
-        credentials.section.list.waitForElementVisible('@add');
-        credentials.section.list.expect.element('@add').enabled;
-        credentials.section.list.click('@add');
+        client.navigateTo(`${credentials.url()}/add`);
 
         details.waitForElementVisible('@save');
         details.clearAndSelectType('Vault');
@@ -215,16 +196,7 @@ module.exports = {
         const credentials = client.page.credentials();
         const { details } = credentials.section.add.section;
 
-        credentials.section.navigation.waitForElementVisible('@credentials');
-        credentials.section.navigation.expect.element('@credentials').enabled;
-        credentials.section.navigation.click('@credentials');
-
-        credentials.waitForElementVisible('div.spinny');
-        credentials.waitForElementNotVisible('div.spinny');
-
-        credentials.section.list.waitForElementVisible('@add');
-        credentials.section.list.expect.element('@add').enabled;
-        credentials.section.list.click('@add');
+        client.navigateTo(`${credentials.url()}/add`);
 
         details.waitForElementVisible('@save');
         details.clearAndSelectType('Machine');
@@ -240,12 +212,7 @@ module.exports = {
     'create job template': client => {
         const templates = client.page.templates();
 
-        templates.section.navigation.waitForElementVisible('@templates');
-        templates.section.navigation.expect.element('@templates').enabled;
-        templates.section.navigation.click('@templates');
-
-        templates.waitForElementVisible('div.spinny');
-        templates.waitForElementNotVisible('div.spinny');
+        client.navigateTo(templates.url());
 
         templates.selectAdd('Job Template');
         templates.selectInventory(INVENTORY_NAME);
@@ -296,7 +263,7 @@ module.exports = {
         client.waitForElementVisible('div.spinny');
         client.waitForElementNotVisible('div.spinny');
 
-        client.waitForElementVisible('.JobResults-detailsPanel');
+        client.waitForElementVisible('at-job-details');
         client.waitForElementNotPresent(running, 60000);
         client.waitForElementVisible(success, 60000);
 

@@ -69,11 +69,20 @@ function BaseStringService (namespace) {
     this.JSON = t.s('JSON');
     this.DELETE = t.s('DELETE');
     this.COPY = t.s('COPY');
+    this.YES = t.s('YES');
 
     this.deleteResource = {
         HEADER: t.s('Delete'),
         USED_BY: resourceType => t.s('The {{ resourceType }} is currently being used by other resources.', { resourceType }),
+        UNAVAILABLE: resourceType => t.s('Deleting this {{ resourceType }} will make the following resources unavailable.', { resourceType }),
         CONFIRM: resourceType => t.s('Are you sure you want to delete this {{ resourceType }}?', { resourceType })
+    };
+
+    this.cancelJob = {
+        HEADER: t.s('Cancel'),
+        SUBMIT_REQUEST: t.s('Are you sure you want to submit the request to cancel this job?'),
+        CANCEL_JOB: t.s('Cancel Job'),
+        RETURN: t.s('Return')
     };
 
     this.error = {

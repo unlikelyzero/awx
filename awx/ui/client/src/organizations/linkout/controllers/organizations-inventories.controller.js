@@ -234,7 +234,7 @@ export default ['$scope', '$rootScope', '$location',
         $scope.viewJob = function(url) {
             // Pull the id out of the URL
             var id = url.replace(/^\//, '').split('/')[3];
-            $state.go('inventorySyncStdout', { id: id });
+            $state.go('output', { id: id, type: 'inventory' });
 
         };
 

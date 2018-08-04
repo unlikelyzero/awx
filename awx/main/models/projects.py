@@ -25,8 +25,16 @@ from awx.main.models.notifications import (
     NotificationTemplate,
     JobNotificationMixin,
 )
-from awx.main.models.unified_jobs import * # noqa
-from awx.main.models.mixins import ResourceMixin, TaskManagerProjectUpdateMixin, CustomVirtualEnvMixin
+from awx.main.models.unified_jobs import (
+    UnifiedJob,
+    UnifiedJobTemplate,
+)
+from awx.main.models.mixins import (
+    ResourceMixin,
+    TaskManagerProjectUpdateMixin,
+    CustomVirtualEnvMixin,
+    RelatedJobsMixin
+)
 from awx.main.utils import update_scm_url
 from awx.main.utils.ansible import skip_directory, could_be_inventory, could_be_playbook
 from awx.main.fields import ImplicitRoleField
@@ -225,7 +233,7 @@ class ProjectOptions(models.Model):
         return proj_path + '.lock'
 
 
-class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEnvMixin):
+class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin):
     '''
     A project represents a playbook git repo that can access a set of inventories
     '''
@@ -233,6 +241,7 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
     SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name', 'organization')]
     FIELDS_TO_PRESERVE_AT_COPY = ['labels', 'instance_groups', 'credentials']
     FIELDS_TO_DISCARD_AT_COPY = ['local_path']
+    FIELDS_TRIGGER_UPDATE = frozenset(['scm_url', 'scm_branch', 'scm_type'])
 
     class Meta:
         app_label = 'main'
@@ -315,6 +324,11 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
             ['name', 'description', 'schedule']
         )
 
+    def __init__(self, *args, **kwargs):
+        r = super(Project, self).__init__(*args, **kwargs)
+        self._prior_values_store = self._current_sensitive_fields()
+        return r
+
     def save(self, *args, **kwargs):
         new_instance = not bool(self.pk)
         # If update_fields has been specified, add our field names to it,
@@ -346,8 +360,21 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
                 with disable_activity_stream():
                     self.save(update_fields=update_fields)
         # If we just created a new project with SCM, start the initial update.
-        if new_instance and self.scm_type and not skip_update:
+        # also update if certain fields have changed
+        relevant_change = False
+        new_values = self._current_sensitive_fields()
+        if hasattr(self, '_prior_values_store') and self._prior_values_store != new_values:
+            relevant_change = True
+        self._prior_values_store = new_values
+        if (relevant_change or new_instance) and (not skip_update) and self.scm_type:
             self.update()
+
+    def _current_sensitive_fields(self):
+        new_values = {}
+        for attr, val in self.__dict__.items():
+            if attr in Project.FIELDS_TRIGGER_UPDATE:
+                new_values[attr] = val
+        return new_values
 
     def _get_current_status(self):
         if self.scm_type:
@@ -442,6 +469,15 @@ class Project(UnifiedJobTemplate, ProjectOptions, ResourceMixin, CustomVirtualEn
     def get_absolute_url(self, request=None):
         return reverse('api:project_detail', kwargs={'pk': self.pk}, request=request)
 
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return UnifiedJob.objects.non_polymorphic().filter(
+            models.Q(Job___project=self) |
+            models.Q(ProjectUpdate___project=self)
+        )
+
 
 class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManagerProjectUpdateMixin):
     '''
@@ -516,7 +552,7 @@ class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManage
         return reverse('api:project_update_detail', kwargs={'pk': self.pk}, request=request)
 
     def get_ui_url(self):
-        return urlparse.urljoin(settings.TOWER_URL_BASE, "/#/scm_update/{}".format(self.pk))
+        return urlparse.urljoin(settings.TOWER_URL_BASE, "/#/jobs/project/{}".format(self.pk))
 
     def _update_parent_instance(self):
         parent_instance = self._get_parent_instance()
@@ -533,7 +569,8 @@ class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManage
         res = super(ProjectUpdate, self).cancel(job_explanation=job_explanation, is_chain=is_chain)
         if res and self.launch_type != 'sync':
             for inv_src in self.scm_inventory_updates.filter(status='running'):
-                inv_src.cancel(job_explanation='Source project update `{}` was canceled.'.format(self.name))
+                inv_src.cancel(job_explanation=six.text_type(
+                    'Source project update `{}` was canceled.').format(self.name))
         return res
 
     '''
@@ -556,3 +593,5 @@ class ProjectUpdate(UnifiedJob, ProjectOptions, JobNotificationMixin, TaskManage
         if not selected_groups:
             return self.global_instance_groups
         return selected_groups
+
+

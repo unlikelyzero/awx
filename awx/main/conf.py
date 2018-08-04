@@ -44,6 +44,16 @@ register(
 )
 
 register(
+    'MANAGE_ORGANIZATION_AUTH',
+    field_class=fields.BooleanField,
+    label=_('Organization Admins Can Manage Users and Teams'),
+    help_text=_('Controls whether any Organization Admin has the privileges to create and manage users and teams. '
+                'You may want to disable this ability if you are using an LDAP or SAML integration.'),
+    category=_('System'),
+    category_slug='system',
+)
+
+register(
     'TOWER_ADMIN_ALERTS',
     field_class=fields.BooleanField,
     label=_('Enable Administrator Alerts'),
@@ -123,6 +133,27 @@ register(
     category=_('Jobs'),
     category_slug='jobs',
     required=False,
+)
+
+register(
+    'ALLOW_JINJA_IN_EXTRA_VARS',
+    field_class=fields.ChoiceField,
+    choices=[
+        ('always', _('Always')),
+        ('never', _('Never')),
+        ('template', _('Only On Job Template Definitions')),
+    ],
+    required=True,
+    label=_('When can extra variables contain Jinja templates?'),
+    help_text=_(
+        'Ansible allows variable substitution via the Jinja2 templating '
+        'language for --extra-vars. This poses a potential security '
+        'risk where Tower users with the ability to specify extra vars at job '
+        'launch time can use Jinja2 templates to run arbitrary Python.  It is '
+        'recommended that this value be set to "template" or "never".'
+    ),
+    category=_('Jobs'),
+    category_slug='jobs',
 )
 
 register(
@@ -247,6 +278,16 @@ register(
 )
 
 register(
+    'AWX_ROLES_ENABLED',
+    field_class=fields.BooleanField,
+    default=True,
+    label=_('Enable Role Download'),
+    help_text=_('Allows roles to be dynamically downlaoded from a requirements.yml file for SCM projects.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
     'STDOUT_MAX_BYTES_DISPLAY',
     field_class=fields.IntegerField,
     min_value=0,
@@ -331,7 +372,8 @@ register(
     label=_('Per-Host Ansible Fact Cache Timeout'),
     help_text=_('Maximum time, in seconds, that stored Ansible facts are considered valid since '
                 'the last time they were modified. Only valid, non-stale, facts will be accessible by '
-                'a playbook. Note, this does not influence the deletion of ansible_facts from the database.'),
+                'a playbook. Note, this does not influence the deletion of ansible_facts from the database. '
+                'Use a value of 0 to indicate that no timeout should be imposed.'),
     category=_('Jobs'),
     category_slug='jobs',
 )
@@ -411,7 +453,7 @@ register(
     field_class=fields.BooleanField,
     default=False,
     label=_('Log System Tracking Facts Individually'),
-    help_text=_('If set, system tracking facts will be sent for each package, service, or'
+    help_text=_('If set, system tracking facts will be sent for each package, service, or '
                 'other item found in a scan, allowing for greater search query granularity. '
                 'If unset, facts will be sent as a single dictionary, allowing for greater '
                 'efficiency in fact processing.'),

@@ -46,9 +46,9 @@ export default ['i18n', function(i18n) {
                 ngClick: 'addUser()',
                 basePaths: ['organizations', 'users'], // base path must be in list, or action not available
                 awToolTip: i18n._('Create a new user'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
-                ngShow: 'canAdd'
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
+                ngShow: 'canAdd && canEdit'
             }
         },
 

@@ -6,6 +6,7 @@ import inspect
 import logging
 import time
 import six
+import urllib    
 
 # Django
 from django.conf import settings
@@ -23,12 +24,13 @@ from django.contrib.auth import views as auth_views
 
 # Django REST Framework
 from rest_framework.authentication import get_authorization_header
-from rest_framework.exceptions import PermissionDenied, AuthenticationFailed
+from rest_framework.exceptions import PermissionDenied, AuthenticationFailed, ParseError
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework import views
 from rest_framework.permissions import AllowAny
+from rest_framework.renderers import JSONRenderer
 
 # cryptography
 from cryptography.fernet import InvalidToken
@@ -39,7 +41,7 @@ from awx.main.models import *  # noqa
 from awx.main.access import access_registry
 from awx.main.utils import * # noqa
 from awx.main.utils.db import get_all_field_names
-from awx.api.serializers import ResourceAccessListElementSerializer, CopySerializer
+from awx.api.serializers import ResourceAccessListElementSerializer, CopySerializer, UserSerializer
 from awx.api.versioning import URLPathVersioning, get_request_version
 from awx.api.metadata import SublistAttachDetatchMetadata, Metadata
 
@@ -66,14 +68,22 @@ class LoggedLoginView(auth_views.LoginView):
         original_user = getattr(request, 'user', None)
         ret = super(LoggedLoginView, self).post(request, *args, **kwargs)
         current_user = getattr(request, 'user', None)
+
         if current_user and getattr(current_user, 'pk', None) and current_user != original_user:
             logger.info("User {} logged in.".format(current_user.username))
         if request.user.is_authenticated:
+            logger.info(smart_text(u"User {} logged in".format(self.request.user.username)))
+            ret.set_cookie('userLoggedIn', 'true')
+            current_user = UserSerializer(self.request.user)
+            current_user = JSONRenderer().render(current_user.data)
+            current_user = urllib.quote('%s' % current_user, '')
+            ret.set_cookie('current_user', current_user)
+            
             return ret
         else:
-            ret.status = 401
+            ret.status_code = 401
             return ret
-            
+
 
 class LoggedLogoutView(auth_views.LogoutView):
 
@@ -81,6 +91,7 @@ class LoggedLogoutView(auth_views.LogoutView):
         original_user = getattr(request, 'user', None)
         ret = super(LoggedLogoutView, self).dispatch(request, *args, **kwargs)
         current_user = getattr(request, 'user', None)
+        ret.set_cookie('userLoggedIn', 'false')
         if (not current_user or not getattr(current_user, 'pk', True)) \
                 and current_user != original_user:
             logger.info("User {} logged out.".format(original_user.username))
@@ -164,6 +175,9 @@ class APIView(views.APIView):
             request.drf_request_user = getattr(drf_request, 'user', False)
         except AuthenticationFailed:
             request.drf_request_user = None
+        except ParseError as exc:
+            request.drf_request_user = None
+            self.__init_request_error__ = exc
         return drf_request
 
     def finalize_response(self, request, response, *args, **kwargs):
@@ -173,6 +187,8 @@ class APIView(views.APIView):
         if response.status_code >= 400:
             status_msg = "status %s received by user %s attempting to access %s from %s" % \
                          (response.status_code, request.user, request.path, request.META.get('REMOTE_ADDR', None))
+            if hasattr(self, '__init_request_error__'):
+                response = self.handle_exception(self.__init_request_error__)
             if response.status_code == 401:
                 logger.info(status_msg)
             else:
@@ -354,13 +370,6 @@ class ListAPIView(generics.ListAPIView, GenericAPIView):
 
     def get_queryset(self):
         return self.request.user.get_queryset(self.model)
-
-    def paginate_queryset(self, queryset):
-        page = super(ListAPIView, self).paginate_queryset(queryset)
-        # Queries RBAC info & stores into list objects
-        if hasattr(self, 'capabilities_prefetch') and page is not None:
-            cache_list_capabilities(page, self.capabilities_prefetch, self.model, self.request.user)
-        return page
 
     def get_description_context(self):
         if 'username' in get_all_field_names(self.model):
@@ -869,6 +878,9 @@ class CopyAPIView(GenericAPIView):
                     obj, field.name, field_val
                 )
         new_obj = model.objects.create(**create_kwargs)
+        logger.debug(six.text_type('Deep copy: Created new object {}({})').format(
+            new_obj, model
+        ))
         # Need to save separatedly because Djang-crum get_current_user would
         # not work properly in non-request-response-cycle context.
         new_obj.created_by = creater

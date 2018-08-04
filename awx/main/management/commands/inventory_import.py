@@ -135,8 +135,7 @@ class AnsibleInventoryLoader(object):
             self.tmp_private_dir = build_proot_temp_dir()
             logger.debug("Using fresh temporary directory '{}' for isolation.".format(self.tmp_private_dir))
             kwargs['proot_temp_dir'] = self.tmp_private_dir
-            # Run from source's location so that custom script contents are in `show_paths`
-            cwd = functioning_dir(self.source)
+            kwargs['proot_show_paths'] = [functioning_dir(self.source)]
         logger.debug("Running from `{}` working directory.".format(cwd))
 
         return wrap_args_with_proot(cmd, cwd, **kwargs)
@@ -155,7 +154,7 @@ class AnsibleInventoryLoader(object):
 
         if self.tmp_private_dir:
             shutil.rmtree(self.tmp_private_dir, True)
-        if proc.returncode != 0 or 'file not found' in stderr:
+        if proc.returncode != 0:
             raise RuntimeError('%s failed (rc=%d) with stdout:\n%s\nstderr:\n%s' % (
                 self.method, proc.returncode, stdout, stderr))
 
@@ -403,9 +402,7 @@ class Command(BaseCommand):
                     _eager_fields=dict(
                         job_args=json.dumps(sys.argv),
                         job_env=dict(os.environ.items()),
-                        job_cwd=os.getcwd(),
-                        execution_node=settings.CLUSTER_HOST_ID,
-                        instance_group=InstanceGroup.objects.get(name='tower'))
+                        job_cwd=os.getcwd())
                 )
 
         # FIXME: Wait or raise error if inventory is being updated by another

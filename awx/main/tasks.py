@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import traceback
@@ -28,7 +29,7 @@ except Exception:
 
 # Celery
 from celery import Task, shared_task, Celery
-from celery.signals import celeryd_init, worker_process_init, worker_shutdown, worker_ready, celeryd_after_setup
+from celery.signals import celeryd_init, worker_shutdown, worker_ready, celeryd_after_setup
 
 # Django
 from django.conf import settings
@@ -48,21 +49,25 @@ from crum import impersonate
 # AWX
 from awx import __version__ as awx_application_version
 from awx.main.constants import CLOUD_PROVIDERS, PRIVILEGE_ESCALATION_METHODS
+from awx.main.access import access_registry
 from awx.main.models import * # noqa
-from awx.main.models.unified_jobs import ACTIVE_STATES
+from awx.main.constants import ACTIVE_STATES
 from awx.main.exceptions import AwxTaskError
 from awx.main.queue import CallbackQueueDispatcher
 from awx.main.expect import run, isolated_manager
 from awx.main.utils import (get_ansible_version, get_ssh_version, decrypt_field, update_scm_url,
                             check_proot_installed, build_proot_temp_dir, get_licenser,
-                            wrap_args_with_proot, OutputEventFilter, ignore_inventory_computed_fields,
+                            wrap_args_with_proot, OutputEventFilter, OutputVerboseFilter, ignore_inventory_computed_fields,
                             ignore_inventory_group_removal, get_type_for_model, extract_ansible_vars)
-from awx.main.utils.reload import restart_local_services, stop_local_services
+from awx.main.utils.safe_yaml import safe_dump, sanitize_jinja
+from awx.main.utils.reload import stop_local_services
 from awx.main.utils.pglock import advisory_lock
-from awx.main.utils.ha import update_celery_worker_routes, register_celery_worker_queues
-from awx.main.utils.handlers import configure_external_logger
+from awx.main.utils.ha import register_celery_worker_queues
 from awx.main.consumers import emit_channel_notification
 from awx.conf import settings_registry
+
+from rest_framework.exceptions import PermissionDenied
+
 
 __all__ = ['RunJob', 'RunSystemJob', 'RunProjectUpdate', 'RunInventoryUpdate',
            'RunAdHocCommand', 'handle_work_error', 'handle_work_success', 'apply_cluster_membership_policies',
@@ -80,18 +85,23 @@ Try upgrading OpenSSH or providing your private key in an different format. \
 logger = logging.getLogger('awx.main.tasks')
 
 
-class LogErrorsTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
+def log_celery_failure(self, exc, task_id, args, kwargs, einfo):
+    try:
         if getattr(exc, 'is_awx_task_error', False):
             # Error caused by user / tracked in job output
-            logger.warning(str(exc))
+            logger.warning(six.text_type("{}").format(exc))
         elif isinstance(self, BaseTask):
-            logger.exception(
-                '%s %s execution encountered exception.',
-                get_type_for_model(self.model), args[0])
+            logger.exception(six.text_type(
+                '{!s} {!s} execution encountered exception.')
+                .format(get_type_for_model(self.model), args[0]))
         else:
-            logger.exception('Task {} encountered exception.'.format(self.name), exc_info=exc)
-        super(LogErrorsTask, self).on_failure(exc, task_id, args, kwargs, einfo)
+            logger.exception(six.text_type('Task {} encountered exception.').format(self.name), exc_info=exc)
+    except Exception:
+        # It's fairly critical that this code _not_ raise exceptions on logging
+        # If you configure external logging in a way that _it_ fails, there's
+        # not a lot we can do here; sys.stderr.write is a final hail mary
+        _, _, tb = sys.exc_info()
+        traceback.print_tb(tb)
 
 
 @celeryd_init.connect
@@ -107,17 +117,7 @@ def celery_startup(conf=None, **kwargs):
             with disable_activity_stream():
                 sch.save()
         except Exception:
-            logger.exception("Failed to rebuild schedule {}.".format(sch))
-
-
-@worker_process_init.connect
-def task_set_logger_pre_run(*args, **kwargs):
-    try:
-        cache.close()
-        configure_external_logger(settings, is_startup=False)
-    except Exception:
-        # General exception because LogErrorsTask not used with celery signals
-        logger.exception('Encountered error on initial log configuration.')
+            logger.exception(six.text_type("Failed to rebuild schedule {}.").format(sch))
 
 
 @worker_shutdown.connect
@@ -126,14 +126,13 @@ def inform_cluster_of_shutdown(*args, **kwargs):
         this_inst = Instance.objects.get(hostname=settings.CLUSTER_HOST_ID)
         this_inst.capacity = 0  # No thank you to new jobs while shut down
         this_inst.save(update_fields=['capacity', 'modified'])
-        logger.warning('Normal shutdown signal for instance {}, '
-                       'removed self from capacity pool.'.format(this_inst.hostname))
+        logger.warning(six.text_type('Normal shutdown signal for instance {}, '
+                       'removed self from capacity pool.').format(this_inst.hostname))
     except Exception:
-        # General exception because LogErrorsTask not used with celery signals
         logger.exception('Encountered problem with normal shutdown signal.')
 
 
-@shared_task(bind=True, queue='tower_instance_router', base=LogErrorsTask)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE)
 def apply_cluster_membership_policies(self):
     with advisory_lock('cluster_policy_lock', wait=True):
         considered_instances = Instance.objects.all().order_by('id')
@@ -143,10 +142,11 @@ def apply_cluster_membership_policies(self):
         actual_instances = []
         Group = namedtuple('Group', ['obj', 'instances'])
         Node = namedtuple('Instance', ['obj', 'groups'])
+
         # Process policy instance list first, these will represent manually managed instances
         # that will not go through automatic policy determination
         for ig in InstanceGroup.objects.all():
-            logger.info("Considering group {}".format(ig.name))
+            logger.info(six.text_type("Applying cluster membership policies to Group {}").format(ig.name))
             ig.instances.clear()
             group_actual = Group(obj=ig, instances=[])
             for i in ig.policy_instance_list:
@@ -154,7 +154,7 @@ def apply_cluster_membership_policies(self):
                 if not inst.exists():
                     continue
                 inst = inst[0]
-                logger.info("Policy List, adding {} to {}".format(inst.hostname, ig.name))
+                logger.info(six.text_type("Policy List, adding Instance {} to Group {}").format(inst.hostname, ig.name))
                 group_actual.instances.append(inst.id)
                 ig.instances.add(inst)
                 filtered_instances.append(inst)
@@ -167,7 +167,7 @@ def apply_cluster_membership_policies(self):
             for i in sorted(actual_instances, cmp=lambda x,y: len(x.groups) - len(y.groups)):
                 if len(g.instances) >= g.obj.policy_instance_minimum:
                     break
-                logger.info("Policy minimum, adding {} to {}".format(i.obj.hostname, g.obj.name))
+                logger.info(six.text_type("Policy minimum, adding Instance {} to Group {}").format(i.obj.hostname, g.obj.name))
                 g.obj.instances.add(i.obj)
                 g.instances.append(i.obj.id)
                 i.groups.append(g.obj.id)
@@ -176,14 +176,14 @@ def apply_cluster_membership_policies(self):
             for i in sorted(actual_instances, cmp=lambda x,y: len(x.groups) - len(y.groups)):
                 if 100 * float(len(g.instances)) / len(actual_instances) >= g.obj.policy_instance_percentage:
                     break
-                logger.info("Policy percentage, adding {} to {}".format(i.obj.hostname, g.obj.name))
+                logger.info(six.text_type("Policy percentage, adding Instance {} to Group {}").format(i.obj.hostname, g.obj.name))
                 g.instances.append(i.obj.id)
                 g.obj.instances.add(i.obj)
                 i.groups.append(g.obj.id)
-        handle_ha_toplogy_changes()
+        handle_ha_toplogy_changes.apply([])
 
 
-@shared_task(queue='tower_broadcast_all', bind=True, base=LogErrorsTask)
+@shared_task(exchange='tower_broadcast_all', bind=True)
 def handle_setting_changes(self, setting_keys):
     orig_len = len(setting_keys)
     for i in range(orig_len):
@@ -194,56 +194,45 @@ def handle_setting_changes(self, setting_keys):
     cache_keys = set(setting_keys)
     logger.debug('cache delete_many(%r)', cache_keys)
     cache.delete_many(cache_keys)
-    for key in cache_keys:
-        if key.startswith('LOG_AGGREGATOR_'):
-            restart_local_services(['uwsgi', 'celery', 'beat', 'callback'])
-            break
-        elif key == 'OAUTH2_PROVIDER':
-            restart_local_services(['uwsgi'])
 
 
-@shared_task(bind=True, queue='tower_broadcast_all', base=LogErrorsTask)
+@shared_task(bind=True, exchange='tower_broadcast_all')
 def handle_ha_toplogy_changes(self):
-    instance = Instance.objects.me()
-    logger.debug("Reconfigure celeryd queues task on host {}".format(self.request.hostname))
+    (changed, instance) = Instance.objects.get_or_register()
+    if changed:
+        logger.info(six.text_type("Registered tower node '{}'").format(instance.hostname))
+    logger.debug(six.text_type("Reconfigure celeryd queues task on host {}").format(self.request.hostname))
     awx_app = Celery('awx')
     awx_app.config_from_object('django.conf:settings')
     instances, removed_queues, added_queues = register_celery_worker_queues(awx_app, self.request.hostname)
-    for instance in instances:
-        logger.info("Workers on tower node '{}' removed from queues {} and added to queues {}"
-                    .format(instance.hostname, removed_queues, added_queues))
-        updated_routes = update_celery_worker_routes(instance, settings)
-        logger.info("Worker on tower node '{}' updated celery routes {} all routes are now {}"
-                    .format(instance.hostname, updated_routes, self.app.conf.CELERY_ROUTES))
+    if len(removed_queues) + len(added_queues) > 0:
+        logger.info(six.text_type("Workers on tower node(s) '{}' removed from queues {} and added to queues {}")
+                    .format([i.hostname for i in instances], removed_queues, added_queues))
 
 
 @worker_ready.connect
 def handle_ha_toplogy_worker_ready(sender, **kwargs):
-    logger.debug("Configure celeryd queues task on host {}".format(sender.hostname))
+    logger.debug(six.text_type("Configure celeryd queues task on host {}").format(sender.hostname))
     instances, removed_queues, added_queues = register_celery_worker_queues(sender.app, sender.hostname)
-    for instance in instances:
-        logger.info("Workers on tower node '{}' unsubscribed from queues {} and subscribed to queues {}"
-                    .format(instance.hostname, removed_queues, added_queues))
+    if len(removed_queues) + len(added_queues) > 0:
+        logger.info(six.text_type("Workers on tower node(s) '{}' removed from queues {} and added to queues {}")
+                    .format([i.hostname for i in instances], removed_queues, added_queues))
 
-
-@celeryd_init.connect
-def handle_update_celery_routes(sender=None, conf=None, **kwargs):
-    conf = conf if conf else sender.app.conf
-    logger.debug("Registering celery routes for {}".format(sender))
-    instance = Instance.objects.me()
-    added_routes = update_celery_worker_routes(instance, conf)
-    logger.info("Workers on tower node '{}' added routes {} all routes are now {}"
-                .format(instance.hostname, added_routes, conf.CELERY_ROUTES))
+    # Expedite the first hearbeat run so a node comes online quickly.
+    cluster_node_heartbeat.apply([])
+    apply_cluster_membership_policies.apply([])
 
 
 @celeryd_after_setup.connect
 def handle_update_celery_hostname(sender, instance, **kwargs):
-    tower_instance = Instance.objects.me()
+    (changed, tower_instance) = Instance.objects.get_or_register()
+    if changed:
+        logger.info(six.text_type("Registered tower node '{}'").format(tower_instance.hostname))
     instance.hostname = 'celery@{}'.format(tower_instance.hostname)
-    logger.warn("Set hostname to {}".format(instance.hostname))
+    logger.warn(six.text_type("Set hostname to {}").format(instance.hostname))
 
 
-@shared_task(queue='tower', base=LogErrorsTask)
+@shared_task(queue=settings.CELERY_DEFAULT_QUEUE)
 def send_notifications(notification_list, job_id=None):
     if not isinstance(notification_list, list):
         raise TypeError("notification_list should be of type list")
@@ -255,19 +244,24 @@ def send_notifications(notification_list, job_id=None):
         job_actual.notifications.add(*notifications)
 
     for notification in notifications:
+        update_fields = ['status', 'notifications_sent']
         try:
             sent = notification.notification_template.send(notification.subject, notification.body)
             notification.status = "successful"
             notification.notifications_sent = sent
         except Exception as e:
-            logger.error("Send Notification Failed {}".format(e))
+            logger.error(six.text_type("Send Notification Failed {}").format(e))
             notification.status = "failed"
             notification.error = smart_str(e)
+            update_fields.append('error')
         finally:
-            notification.save()
+            try:
+                notification.save(update_fields=update_fields)
+            except Exception as e:
+                logger.exception(six.text_type('Error saving notification {} result.').format(notification.id))
 
 
-@shared_task(bind=True, queue='tower', base=LogErrorsTask)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE)
 def run_administrative_checks(self):
     logger.warn("Running administrative checks.")
     if not settings.TOWER_ADMIN_ALERTS:
@@ -289,22 +283,26 @@ def run_administrative_checks(self):
                   fail_silently=True)
 
 
-@shared_task(bind=True, base=LogErrorsTask)
+@shared_task(bind=True)
 def purge_old_stdout_files(self):
     nowtime = time.time()
     for f in os.listdir(settings.JOBOUTPUT_ROOT):
         if os.path.getctime(os.path.join(settings.JOBOUTPUT_ROOT,f)) < nowtime - settings.LOCAL_STDOUT_EXPIRE_TIME:
             os.unlink(os.path.join(settings.JOBOUTPUT_ROOT,f))
-            logger.info("Removing {}".format(os.path.join(settings.JOBOUTPUT_ROOT,f)))
+            logger.info(six.text_type("Removing {}").format(os.path.join(settings.JOBOUTPUT_ROOT,f)))
 
 
-@shared_task(bind=True, base=LogErrorsTask)
+@shared_task(bind=True)
 def cluster_node_heartbeat(self):
     logger.debug("Cluster node heartbeat task.")
     nowtime = now()
-    instance_list = list(Instance.objects.filter(rampart_groups__controller__isnull=True).distinct())
+    instance_list = list(Instance.objects.all_non_isolated())
     this_inst = None
     lost_instances = []
+
+    (changed, instance) = Instance.objects.get_or_register()
+    if changed:
+        logger.info(six.text_type("Registered tower node '{}'").format(instance.hostname))
 
     for inst in list(instance_list):
         if inst.hostname == settings.CLUSTER_HOST_ID:
@@ -316,7 +314,7 @@ def cluster_node_heartbeat(self):
     if this_inst:
         startup_event = this_inst.is_lost(ref_time=nowtime)
         if this_inst.capacity == 0 and this_inst.enabled:
-            logger.warning('Rejoining the cluster as instance {}.'.format(this_inst.hostname))
+            logger.warning(six.text_type('Rejoining the cluster as instance {}.').format(this_inst.hostname))
         if this_inst.enabled:
             this_inst.refresh_capacity()
             handle_ha_toplogy_changes.apply_async()
@@ -333,34 +331,41 @@ def cluster_node_heartbeat(self):
         if other_inst.version == "":
             continue
         if Version(other_inst.version.split('-', 1)[0]) > Version(awx_application_version.split('-', 1)[0]) and not settings.DEBUG:
-            logger.error("Host {} reports version {}, but this node {} is at {}, shutting down".format(other_inst.hostname,
-                                                                                                       other_inst.version,
-                                                                                                       this_inst.hostname,
-                                                                                                       this_inst.version))
+            logger.error(six.text_type("Host {} reports version {}, but this node {} is at {}, shutting down")
+                            .format(other_inst.hostname,
+                                    other_inst.version,
+                                    this_inst.hostname,
+                                    this_inst.version))
             # Shutdown signal will set the capacity to zero to ensure no Jobs get added to this instance.
             # The heartbeat task will reset the capacity to the system capacity after upgrade.
             stop_local_services(['uwsgi', 'celery', 'beat', 'callback'], communicate=False)
             raise RuntimeError("Shutting down.")
     for other_inst in lost_instances:
-        if other_inst.capacity == 0:
-            continue
         try:
-            other_inst.capacity = 0
-            other_inst.save(update_fields=['capacity'])
-            logger.error("Host {} last checked in at {}, marked as lost.".format(
-                other_inst.hostname, other_inst.modified))
-            if settings.AWX_AUTO_DEPROVISION_INSTANCES:
+            # Capacity could already be 0 because:
+            #  * It's a new node and it never had a heartbeat
+            #  * It was set to 0 by another tower node running this method
+            #  * It was set to 0 by this node, but auto deprovisioning is off
+            #
+            # If auto deprovisining is on, don't bother setting the capacity to 0
+            # since we will delete the node anyway.
+            if other_inst.capacity != 0 and not settings.AWX_AUTO_DEPROVISION_INSTANCES:
+                other_inst.capacity = 0
+                other_inst.save(update_fields=['capacity'])
+                logger.error(six.text_type("Host {} last checked in at {}, marked as lost.").format(
+                    other_inst.hostname, other_inst.modified))
+            elif settings.AWX_AUTO_DEPROVISION_INSTANCES:
                 deprovision_hostname = other_inst.hostname
                 other_inst.delete()
-                logger.info("Host {} Automatically Deprovisioned.".format(deprovision_hostname))
+                logger.info(six.text_type("Host {} Automatically Deprovisioned.").format(deprovision_hostname))
         except DatabaseError as e:
             if 'did not affect any rows' in str(e):
-                logger.debug('Another instance has marked {} as lost'.format(other_inst.hostname))
+                logger.debug(six.text_type('Another instance has marked {} as lost').format(other_inst.hostname))
             else:
-                logger.exception('Error marking {} as lost'.format(other_inst.hostname))
+                logger.exception(six.text_type('Error marking {} as lost').format(other_inst.hostname))
 
 
-@shared_task(bind=True, base=LogErrorsTask)
+@shared_task(bind=True)
 def awx_isolated_heartbeat(self):
     local_hostname = settings.CLUSTER_HOST_ID
     logger.debug("Controlling node checking for any isolated management tasks.")
@@ -380,11 +385,11 @@ def awx_isolated_heartbeat(self):
             isolated_instance.save(update_fields=['last_isolated_check'])
     # Slow pass looping over isolated IGs and their isolated instances
     if len(isolated_instance_qs) > 0:
-        logger.debug("Managing isolated instances {}.".format(','.join([inst.hostname for inst in isolated_instance_qs])))
+        logger.debug(six.text_type("Managing isolated instances {}.").format(','.join([inst.hostname for inst in isolated_instance_qs])))
         isolated_manager.IsolatedManager.health_check(isolated_instance_qs, awx_application_version)
 
 
-@shared_task(bind=True, queue='tower', base=LogErrorsTask)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE)
 def awx_periodic_scheduler(self):
     run_now = now()
     state = TowerScheduleState.get_solo()
@@ -397,6 +402,13 @@ def awx_periodic_scheduler(self):
     for schedule in old_schedules:
         schedule.save()
     schedules = Schedule.objects.enabled().between(last_run, run_now)
+
+    invalid_license = False
+    try:
+        access_registry[Job](None).check_license()
+    except PermissionDenied as e:
+        invalid_license = e
+
     for schedule in schedules:
         template = schedule.unified_job_template
         schedule.save() # To update next_run timestamp.
@@ -406,6 +418,13 @@ def awx_periodic_scheduler(self):
         try:
             job_kwargs = schedule.get_job_kwargs()
             new_unified_job = schedule.unified_job_template.create_unified_job(**job_kwargs)
+
+            if invalid_license:
+                new_unified_job.status = 'failed'
+                new_unified_job.job_explanation = str(invalid_license)
+                new_unified_job.save(update_fields=['status', 'job_explanation'])
+                new_unified_job.websocket_emit_status("failed")
+                raise invalid_license
             can_start = new_unified_job.signal_start()
         except Exception:
             logger.exception('Error spawning scheduled job.')
@@ -419,31 +438,7 @@ def awx_periodic_scheduler(self):
     state.save()
 
 
-def _send_notification_templates(instance, status_str):
-    if status_str not in ['succeeded', 'failed']:
-        raise ValueError(_("status_str must be either succeeded or failed"))
-    try:
-        notification_templates = instance.get_notification_templates()
-    except Exception:
-        logger.warn("No notification template defined for emitting notification")
-        notification_templates = None
-    if notification_templates:
-        if status_str == 'succeeded':
-            notification_template_type = 'success'
-        else:
-            notification_template_type = 'error'
-        all_notification_templates = set(notification_templates.get(notification_template_type, []) + notification_templates.get('any', []))
-        if len(all_notification_templates):
-            try:
-                (notification_subject, notification_body) = getattr(instance, 'build_notification_%s_message' % status_str)()
-            except AttributeError:
-                raise NotImplementedError("build_notification_%s_message() does not exist" % status_str)
-            send_notifications.delay([n.generate_notification(notification_subject, notification_body).id
-                                      for n in all_notification_templates],
-                                     job_id=instance.id)
-
-
-@shared_task(bind=True, queue='tower', base=LogErrorsTask)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE)
 def handle_work_success(self, result, task_actual):
     try:
         instance = UnifiedJob.get_instance_by_type(task_actual['type'], task_actual['id'])
@@ -453,13 +448,11 @@ def handle_work_success(self, result, task_actual):
     if not instance:
         return
 
-    _send_notification_templates(instance, 'succeeded')
-
     from awx.main.scheduler.tasks import run_job_complete
     run_job_complete.delay(instance.id)
 
 
-@shared_task(queue='tower', base=LogErrorsTask)
+@shared_task(queue=settings.CELERY_DEFAULT_QUEUE)
 def handle_work_error(task_id, *args, **kwargs):
     subtasks = kwargs.get('subtasks', None)
     logger.debug('Executing error task id %s, subtasks: %s' % (task_id, str(subtasks)))
@@ -490,9 +483,6 @@ def handle_work_error(task_id, *args, **kwargs):
                 instance.save()
                 instance.websocket_emit_status("failed")
 
-        if first_instance:
-            _send_notification_templates(first_instance, 'failed')
-
     # We only send 1 job complete message since all the job completion message
     # handling does is trigger the scheduler. If we extend the functionality of
     # what the job complete message handler does then we may want to send a
@@ -503,7 +493,7 @@ def handle_work_error(task_id, *args, **kwargs):
         pass
 
 
-@shared_task(queue='tower', base=LogErrorsTask)
+@shared_task(queue=settings.CELERY_DEFAULT_QUEUE)
 def update_inventory_computed_fields(inventory_id, should_update_hosts=True):
     '''
     Signal handler and wrapper around inventory.update_computed_fields to
@@ -523,7 +513,7 @@ def update_inventory_computed_fields(inventory_id, should_update_hosts=True):
         raise
 
 
-@shared_task(queue='tower', base=LogErrorsTask)
+@shared_task(queue=settings.CELERY_DEFAULT_QUEUE)
 def update_host_smart_inventory_memberships():
     try:
         with transaction.atomic():
@@ -541,14 +531,14 @@ def update_host_smart_inventory_memberships():
                     changed_inventories.add(smart_inventory)
             SmartInventoryMembership.objects.bulk_create(memberships)
     except IntegrityError as e:
-        logger.error("Update Host Smart Inventory Memberships failed due to an exception: " + str(e))
+        logger.error(six.text_type("Update Host Smart Inventory Memberships failed due to an exception: {}").format(e))
         return
     # Update computed fields for changed inventories outside atomic action
     for smart_inventory in changed_inventories:
         smart_inventory.update_computed_fields(update_groups=False, update_hosts=False)
 
 
-@shared_task(bind=True, queue='tower', base=LogErrorsTask, max_retries=5)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE, max_retries=5)
 def delete_inventory(self, inventory_id, user_id):
     # Delete inventory as user
     if user_id is None:
@@ -561,17 +551,19 @@ def delete_inventory(self, inventory_id, user_id):
     with ignore_inventory_computed_fields(), ignore_inventory_group_removal(), impersonate(user):
         try:
             i = Inventory.objects.get(id=inventory_id)
+            for host in i.hosts.iterator():
+                host.job_events_as_primary_host.update(host=None)
             i.delete()
             emit_channel_notification(
                 'inventories-status_changed',
                 {'group_name': 'inventories', 'inventory_id': inventory_id, 'status': 'deleted'}
             )
-            logger.debug('Deleted inventory %s as user %s.' % (inventory_id, user_id))
+            logger.debug(six.text_type('Deleted inventory {} as user {}.').format(inventory_id, user_id))
         except Inventory.DoesNotExist:
-            logger.error("Delete Inventory failed due to missing inventory: " + str(inventory_id))
+            logger.exception("Delete Inventory failed due to missing inventory: " + str(inventory_id))
             return
         except DatabaseError:
-            logger.warning('Database error deleting inventory {}, but will retry.'.format(inventory_id))
+            logger.exception('Database error deleting inventory {}, but will retry.'.format(inventory_id))
             self.retry(countdown=10)
 
 
@@ -588,12 +580,12 @@ def with_path_cleanup(f):
                     elif os.path.exists(p):
                         os.remove(p)
                 except OSError:
-                    logger.exception("Failed to remove tmp file: {}".format(p))
+                    logger.exception(six.text_type("Failed to remove tmp file: {}").format(p))
             self.cleanup_paths = []
     return _wrapped
 
 
-class BaseTask(LogErrorsTask):
+class BaseTask(Task):
     name = None
     model = None
     event_model = None
@@ -728,7 +720,10 @@ class BaseTask(LogErrorsTask):
     def build_extra_vars_file(self, vars, **kwargs):
         handle, path = tempfile.mkstemp(dir=kwargs.get('private_data_dir', None))
         f = os.fdopen(handle, 'w')
-        f.write(json.dumps(vars))
+        if settings.ALLOW_JINJA_IN_EXTRA_VARS == 'always':
+            f.write(yaml.safe_dump(vars))
+        else:
+            f.write(safe_dump(vars, kwargs.get('safe_dict', {}) or None))
         f.close()
         os.chmod(path, stat.S_IRUSR)
         return path
@@ -742,7 +737,6 @@ class BaseTask(LogErrorsTask):
             raise RuntimeError(
                 'a valid Python virtualenv does not exist at {}'.format(venv_path)
             )
-
         env.pop('PYTHONPATH', None)  # default to none if no python_ver matches
         if os.path.isdir(os.path.join(venv_libdir, "python2.7")):
             env['PYTHONPATH'] = os.path.join(venv_libdir, "python2.7", "site-packages") + ":"
@@ -829,19 +823,26 @@ class BaseTask(LogErrorsTask):
 
     def get_stdout_handle(self, instance):
         '''
-        Return an virtual file object for capturing stdout and events.
+        Return an virtual file object for capturing stdout and/or events.
         '''
         dispatcher = CallbackQueueDispatcher()
 
-        def event_callback(event_data):
-            event_data.setdefault(self.event_data_key, instance.id)
-            if 'uuid' in event_data:
-                cache_event = cache.get('ev-{}'.format(event_data['uuid']), None)
-                if cache_event is not None:
-                    event_data.update(cache_event)
-            dispatcher.dispatch(event_data)
+        if isinstance(instance, (Job, AdHocCommand, ProjectUpdate)):
+            def event_callback(event_data):
+                event_data.setdefault(self.event_data_key, instance.id)
+                if 'uuid' in event_data:
+                    cache_event = cache.get('ev-{}'.format(event_data['uuid']), None)
+                    if cache_event is not None:
+                        event_data.update(cache_event)
+                dispatcher.dispatch(event_data)
 
-        return OutputEventFilter(event_callback)
+            return OutputEventFilter(event_callback)
+        else:
+            def event_callback(event_data):
+                event_data.setdefault(self.event_data_key, instance.id)
+                dispatcher.dispatch(event_data)
+
+            return OutputVerboseFilter(event_callback)
 
     def pre_run_hook(self, instance, **kwargs):
         '''
@@ -873,6 +874,8 @@ class BaseTask(LogErrorsTask):
         status, rc, tb = 'error', None, ''
         output_replacements = []
         extra_update_fields = {}
+        event_ct = 0
+        stdout_handle = None
         try:
             kwargs['isolated'] = isolated_host is not None
             self.pre_run_hook(instance, **kwargs)
@@ -983,40 +986,39 @@ class BaseTask(LogErrorsTask):
                 )
 
         except Exception:
-            if status != 'canceled':
-                tb = traceback.format_exc()
-                if settings.DEBUG:
-                    logger.exception('%s Exception occurred while running task', instance.log_format)
+            # run_pexpect does not throw exceptions for cancel or timeout
+            # this could catch programming or file system errors
+            tb = traceback.format_exc()
+            logger.exception('%s Exception occurred while running task', instance.log_format)
         finally:
             try:
-                stdout_handle.flush()
-                stdout_handle.close()
-                # If stdout_handle was wrapped with event filter, log data
-                if hasattr(stdout_handle, '_event_ct'):
-                    logger.info('%s finished running, producing %s events.',
-                                instance.log_format, stdout_handle._event_ct)
-                else:
-                    logger.info('%s finished running', instance.log_format)
+                if stdout_handle:
+                    stdout_handle.flush()
+                    stdout_handle.close()
+                    event_ct = getattr(stdout_handle, '_event_ct', 0)
+                logger.info('%s finished running, producing %s events.',
+                            instance.log_format, event_ct)
             except Exception:
-                pass
+                logger.exception('Error flushing job stdout and saving event count.')
 
         try:
             self.post_run_hook(instance, status, **kwargs)
         except Exception:
-            logger.exception('{} Post run hook errored.'.format(instance.log_format))
+            logger.exception(six.text_type('{} Post run hook errored.').format(instance.log_format))
         instance = self.update_model(pk)
         if instance.cancel_flag:
             status = 'canceled'
 
         instance = self.update_model(pk, status=status, result_traceback=tb,
                                      output_replacements=output_replacements,
+                                     emitted_events=event_ct,
                                      **extra_update_fields)
         try:
             self.final_run_hook(instance, status, **kwargs)
         except Exception:
-            logger.exception('%s Final run hook errored.', instance.log_format)
+            logger.exception(six.text_type('{} Final run hook errored.').format(instance.log_format))
         instance.websocket_emit_status(status)
-        if status != 'successful' and not hasattr(settings, 'CELERY_UNIT_TEST'):
+        if status != 'successful':
             # Raising an exception will mark the job as 'failed' in celery
             # and will stop a task chain from continuing to execute
             if status == 'canceled':
@@ -1148,11 +1150,12 @@ class RunJob(BaseTask):
         if job.project:
             env['PROJECT_REVISION'] = job.project.scm_revision
         env['ANSIBLE_RETRY_FILES_ENABLED'] = "False"
+        env['ANSIBLE_INVENTORY_ENABLED'] = 'script'
+        env['ANSIBLE_INVENTORY_UNPARSED_FAILED'] = 'True'
         env['MAX_EVENT_RES'] = str(settings.MAX_EVENT_RES_DATA)
         if not kwargs.get('isolated'):
             env['ANSIBLE_CALLBACK_PLUGINS'] = plugin_path
             env['ANSIBLE_STDOUT_CALLBACK'] = 'awx_display'
-            env['TOWER_HOST'] = settings.TOWER_URL_BASE
             env['AWX_HOST'] = settings.TOWER_URL_BASE
         env['CACHE'] = settings.CACHES['default']['LOCATION'] if 'LOCATION' in settings.CACHES['default'] else ''
 
@@ -1161,7 +1164,7 @@ class RunJob(BaseTask):
         cp_dir = os.path.join(kwargs['private_data_dir'], 'cp')
         if not os.path.exists(cp_dir):
             os.mkdir(cp_dir, 0o700)
-        env['ANSIBLE_SSH_CONTROL_PATH'] = os.path.join(cp_dir, '%%h%%p%%r')
+        env['ANSIBLE_SSH_CONTROL_PATH_DIR'] = cp_dir
 
         # Allow the inventory script to include host variables inline via ['_meta']['hostvars'].
         env['INVENTORY_HOSTVARS'] = str(True)
@@ -1212,7 +1215,7 @@ class RunJob(BaseTask):
         args = ['ansible-playbook', '-i', self.build_inventory(job, **kwargs)]
         if job.job_type == 'check':
             args.append('--check')
-        args.extend(['-u', ssh_username])
+        args.extend(['-u', sanitize_jinja(ssh_username)])
         if 'ssh_password' in kwargs.get('passwords', {}):
             args.append('--ask-pass')
         if job.become_enabled:
@@ -1220,9 +1223,9 @@ class RunJob(BaseTask):
         if job.diff_mode:
             args.append('--diff')
         if become_method:
-            args.extend(['--become-method', become_method])
+            args.extend(['--become-method', sanitize_jinja(become_method)])
         if become_username:
-            args.extend(['--become-user', become_username])
+            args.extend(['--become-user', sanitize_jinja(become_username)])
         if 'become_password' in kwargs.get('passwords', {}):
             args.append('--ask-become-pass')
 
@@ -1259,7 +1262,20 @@ class RunJob(BaseTask):
                 extra_vars.update(json.loads(job.display_extra_vars()))
             else:
                 extra_vars.update(json.loads(job.decrypted_extra_vars()))
-        extra_vars_path = self.build_extra_vars_file(vars=extra_vars, **kwargs)
+
+        # By default, all extra vars disallow Jinja2 template usage for
+        # security reasons; top level key-values defined in JT.extra_vars, however,
+        # are whitelisted as "safe" (because they can only be set by users with
+        # higher levels of privilege - those that have the ability create and
+        # edit Job Templates)
+        safe_dict = {}
+        if job.job_template and settings.ALLOW_JINJA_IN_EXTRA_VARS == 'template':
+            safe_dict = job.job_template.extra_vars_dict
+        extra_vars_path = self.build_extra_vars_file(
+            vars=extra_vars,
+            safe_dict=safe_dict,
+            **kwargs
+        )
         args.extend(['-e', '@%s' % (extra_vars_path)])
 
         # Add path to playbook (relative to project.local_path).
@@ -1505,6 +1521,7 @@ class RunProjectUpdate(BaseTask):
             'scm_full_checkout': True if project_update.job_type == 'run' else False,
             'scm_revision_output': self.revision_path,
             'scm_revision': project_update.project.scm_revision,
+            'roles_enabled': getattr(settings, 'AWX_ROLES_ENABLED', True)
         })
         extra_vars_path = self.build_extra_vars_file(vars=extra_vars, **kwargs)
         args.extend(['-e', '@%s' % (extra_vars_path)])
@@ -1605,8 +1622,8 @@ class RunProjectUpdate(BaseTask):
                 task_instance.request.id = project_request_id
                 task_instance.run(local_inv_update.id)
             except Exception:
-                logger.exception('%s Unhandled exception updating dependent SCM inventory sources.',
-                                 project_update.log_format)
+                logger.exception(six.text_type('{} Unhandled exception updating dependent SCM inventory sources.')
+                                 .format(project_update.log_format))
 
             try:
                 project_update.refresh_from_db()
@@ -1619,10 +1636,10 @@ class RunProjectUpdate(BaseTask):
                 logger.warning('%s Dependent inventory update deleted during execution.', project_update.log_format)
                 continue
             if project_update.cancel_flag:
-                logger.info('Project update {} was canceled while updating dependent inventories.'.format(project_update.log_format))
+                logger.info(six.text_type('Project update {} was canceled while updating dependent inventories.').format(project_update.log_format))
                 break
             if local_inv_update.cancel_flag:
-                logger.info('Continuing to process project dependencies after {} was canceled'.format(local_inv_update.log_format))
+                logger.info(six.text_type('Continuing to process project dependencies after {} was canceled').format(local_inv_update.log_format))
             if local_inv_update.status == 'successful':
                 inv_src.scm_last_revision = scm_revision
                 inv_src.save(update_fields=['scm_last_revision'])
@@ -1631,7 +1648,7 @@ class RunProjectUpdate(BaseTask):
         try:
             fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
         except IOError as e:
-            logger.error("I/O error({0}) while trying to open lock file [{1}]: {2}".format(e.errno, instance.get_lock_file(), e.strerror))
+            logger.error(six.text_type("I/O error({0}) while trying to open lock file [{1}]: {2}").format(e.errno, instance.get_lock_file(), e.strerror))
             os.close(self.lock_fd)
             raise
 
@@ -1649,14 +1666,20 @@ class RunProjectUpdate(BaseTask):
         try:
             self.lock_fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT)
         except OSError as e:
-            logger.error("I/O error({0}) while trying to open lock file [{1}]: {2}".format(e.errno, lock_path, e.strerror))
+            logger.error(six.text_type("I/O error({0}) while trying to open lock file [{1}]: {2}").format(e.errno, lock_path, e.strerror))
             raise
 
         try:
+            start_time = time.time()
             fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+            waiting_time = time.time() - start_time
+            if waiting_time > 1.0:
+                logger.info(six.text_type(
+                    '{} spent {} waiting to acquire lock for local source tree '
+                    'for path {}.').format(instance.log_format, waiting_time, lock_path))
         except IOError as e:
             os.close(self.lock_fd)
-            logger.error("I/O error({0}) while trying to aquire lock on file [{1}]: {2}".format(e.errno, lock_path, e.strerror))
+            logger.error(six.text_type("I/O error({0}) while trying to aquire lock on file [{1}]: {2}").format(e.errno, lock_path, e.strerror))
             raise
 
     def pre_run_hook(self, instance, **kwargs):
@@ -1676,7 +1699,7 @@ class RunProjectUpdate(BaseTask):
             if lines:
                 p.scm_revision = lines[0].strip()
             else:
-                logger.info("%s Could not find scm revision in check", instance.log_format)
+                logger.info(six.text_type("{} Could not find scm revision in check").format(instance.log_format))
             p.playbook_files = p.playbooks
             p.inventory_files = p.inventories
             p.save()
@@ -1700,6 +1723,10 @@ class RunInventoryUpdate(BaseTask):
     model = InventoryUpdate
     event_model = InventoryUpdateEvent
     event_data_key = 'inventory_update_id'
+
+    @property
+    def proot_show_paths(self):
+        return [self.get_path_to('..', 'plugins', 'inventory')]
 
     def build_private_data(self, inventory_update, **kwargs):
         """
@@ -1824,6 +1851,7 @@ class RunInventoryUpdate(BaseTask):
 
             group_patterns = '[]'
             group_prefix = 'foreman_'
+            want_hostcollections = 'False'
             foreman_opts = dict(inventory_update.source_vars_dict.items())
             foreman_opts.setdefault('ssl_verify', 'False')
             for k, v in foreman_opts.items():
@@ -1831,6 +1859,8 @@ class RunInventoryUpdate(BaseTask):
                     group_patterns = v
                 elif k == 'satellite6_group_prefix' and isinstance(v, basestring):
                     group_prefix = v
+                elif k == 'satellite6_want_hostcollections' and isinstance(v, bool):
+                    want_hostcollections = v
                 else:
                     cp.set(section, k, six.text_type(v))
 
@@ -1843,6 +1873,7 @@ class RunInventoryUpdate(BaseTask):
             cp.add_section(section)
             cp.set(section, 'group_patterns', group_patterns)
             cp.set(section, 'want_facts', True)
+            cp.set(section, 'want_hostcollections', want_hostcollections)
             cp.set(section, 'group_prefix', group_prefix)
 
             section = 'cache'
@@ -1881,11 +1912,16 @@ class RunInventoryUpdate(BaseTask):
             cp.set(section, 'group_by_resource_group', 'yes')
             cp.set(section, 'group_by_location', 'yes')
             cp.set(section, 'group_by_tag', 'yes')
+
             if inventory_update.source_regions and 'all' not in inventory_update.source_regions:
                 cp.set(
                     section, 'locations',
                     ','.join([x.strip() for x in inventory_update.source_regions.split(',')])
                 )
+
+            azure_rm_opts = dict(inventory_update.source_vars_dict.items())
+            for k,v in azure_rm_opts.items():
+                cp.set(section, k, six.text_type(v))
 
         # Return INI content.
         if cp.sections():
@@ -1930,6 +1966,9 @@ class RunInventoryUpdate(BaseTask):
         env['INVENTORY_UPDATE_ID'] = str(inventory_update.pk)
         # Always use the --export option for ansible-inventory
         env['ANSIBLE_INVENTORY_EXPORT'] = str(True)
+        plugin_name = inventory_update.get_inventory_plugin_name()
+        if plugin_name is not None:
+            env['ANSIBLE_INVENTORY_ENABLED'] = plugin_name
 
         # Set environment variables specific to each source.
         #
@@ -1987,6 +2026,9 @@ class RunInventoryUpdate(BaseTask):
         # Get the inventory source and inventory.
         inventory_source = inventory_update.inventory_source
         inventory = inventory_source.inventory
+
+        if inventory is None:
+            raise RuntimeError('Inventory Source is not associated with an Inventory.')
 
         # Piece together the initial command to run via. the shell.
         args = ['awx-manage', 'inventory_import']
@@ -2050,6 +2092,8 @@ class RunInventoryUpdate(BaseTask):
         return args
 
     def build_cwd(self, inventory_update, **kwargs):
+        if inventory_update.source == 'scm' and inventory_update.source_project_update:
+            return inventory_update.source_project_update.get_project_path(check_if_exists=False)
         return self.get_path_to('..', 'plugins', 'inventory')
 
     def get_idle_timeout(self):
@@ -2183,7 +2227,7 @@ class RunAdHocCommand(BaseTask):
         args = ['ansible', '-i', self.build_inventory(ad_hoc_command, **kwargs)]
         if ad_hoc_command.job_type == 'check':
             args.append('--check')
-        args.extend(['-u', ssh_username])
+        args.extend(['-u', sanitize_jinja(ssh_username)])
         if 'ssh_password' in kwargs.get('passwords', {}):
             args.append('--ask-pass')
         # We only specify sudo/su user and password if explicitly given by the
@@ -2191,9 +2235,9 @@ class RunAdHocCommand(BaseTask):
         if ad_hoc_command.become_enabled:
             args.append('--become')
         if become_method:
-            args.extend(['--become-method', become_method])
+            args.extend(['--become-method', sanitize_jinja(become_method)])
         if become_username:
-            args.extend(['--become-user', become_username])
+            args.extend(['--become-user', sanitize_jinja(become_username)])
         if 'become_password' in kwargs.get('passwords', {}):
             args.append('--ask-become-pass')
 
@@ -2204,18 +2248,7 @@ class RunAdHocCommand(BaseTask):
         if ad_hoc_command.verbosity:
             args.append('-%s' % ('v' * min(5, ad_hoc_command.verbosity)))
 
-        # Define special extra_vars for AWX, combine with ad_hoc_command.extra_vars
-        extra_vars = {
-            'tower_job_id': ad_hoc_command.pk,
-            'awx_job_id': ad_hoc_command.pk,
-        }
-        if ad_hoc_command.created_by:
-            extra_vars.update({
-                'tower_user_id': ad_hoc_command.created_by.pk,
-                'tower_user_name': ad_hoc_command.created_by.username,
-                'awx_user_id': ad_hoc_command.created_by.pk,
-                'awx_user_name': ad_hoc_command.created_by.username,
-            })
+        extra_vars = ad_hoc_command.awx_meta_vars()
 
         if ad_hoc_command.extra_vars_dict:
             redacted_extra_vars, removed_vars = extract_ansible_vars(ad_hoc_command.extra_vars_dict)
@@ -2228,7 +2261,7 @@ class RunAdHocCommand(BaseTask):
         args.extend(['-e', '@%s' % (extra_vars_path)])
 
         args.extend(['-m', ad_hoc_command.module_name])
-        args.extend(['-a', ad_hoc_command.module_args])
+        args.extend(['-a', sanitize_jinja(ad_hoc_command.module_args)])
 
         if ad_hoc_command.limit:
             args.append(ad_hoc_command.limit)
@@ -2277,21 +2310,16 @@ class RunSystemJob(BaseTask):
                 json_vars = {}
             else:
                 json_vars = json.loads(system_job.extra_vars)
-            if 'days' in json_vars and system_job.job_type != 'cleanup_facts':
+            if 'days' in json_vars:
                 args.extend(['--days', str(json_vars.get('days', 60))])
-            if 'dry_run' in json_vars and json_vars['dry_run'] and system_job.job_type != 'cleanup_facts':
+            if 'dry_run' in json_vars and json_vars['dry_run']:
                 args.extend(['--dry-run'])
             if system_job.job_type == 'cleanup_jobs':
                 args.extend(['--jobs', '--project-updates', '--inventory-updates',
                              '--management-jobs', '--ad-hoc-commands', '--workflow-jobs',
                              '--notifications'])
-            if system_job.job_type == 'cleanup_facts':
-                if 'older_than' in json_vars:
-                    args.extend(['--older_than', str(json_vars['older_than'])])
-                if 'granularity' in json_vars:
-                    args.extend(['--granularity', str(json_vars['granularity'])])
         except Exception:
-            logger.exception("%s Failed to parse system job", system_job.log_format)
+            logger.exception(six.text_type("{} Failed to parse system job").format(system_job.log_format))
         return args
 
     def build_env(self, instance, **kwargs):
@@ -2317,16 +2345,19 @@ def _reconstruct_relationships(copy_mapping):
                 setattr(new_obj, field_name, related_obj)
             elif field.many_to_many:
                 for related_obj in getattr(old_obj, field_name).all():
+                    logger.debug(six.text_type('Deep copy: Adding {} to {}({}).{} relationship').format(
+                        related_obj, new_obj, model, field_name
+                    ))
                     getattr(new_obj, field_name).add(copy_mapping.get(related_obj, related_obj))
         new_obj.save()
 
 
-@shared_task(bind=True, queue='tower', base=LogErrorsTask)
+@shared_task(bind=True, queue=settings.CELERY_DEFAULT_QUEUE)
 def deep_copy_model_obj(
     self, model_module, model_name, obj_pk, new_obj_pk,
     user_pk, sub_obj_list, permission_check_func=None
 ):
-    logger.info('Deep copy {} from {} to {}.'.format(model_name, obj_pk, new_obj_pk))
+    logger.info(six.text_type('Deep copy {} from {} to {}.').format(model_name, obj_pk, new_obj_pk))
     from awx.api.generics import CopyAPIView
     model = getattr(importlib.import_module(model_module), model_name, None)
     if model is None:
@@ -2338,7 +2369,7 @@ def deep_copy_model_obj(
     except ObjectDoesNotExist:
         logger.warning("Object or user no longer exists.")
         return
-    with transaction.atomic():
+    with transaction.atomic(), ignore_inventory_computed_fields():
         copy_mapping = {}
         for sub_obj_setup in sub_obj_list:
             sub_model = getattr(importlib.import_module(sub_obj_setup[0]),
@@ -2358,3 +2389,5 @@ def deep_copy_model_obj(
                 importlib.import_module(permission_check_func[0]), permission_check_func[1]
             ), permission_check_func[2])
             permission_check_func(creater, copy_mapping.values())
+    if isinstance(new_obj, Inventory):
+        update_inventory_computed_fields.delay(new_obj.id, True)

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 import uuid
 import json
+import six
 from sets import Set
 
 # Django
@@ -37,7 +38,6 @@ from awx.main.utils import get_type_for_model
 from awx.main.signals import disable_activity_stream
 
 from awx.main.scheduler.dependency_graph import DependencyGraph
-from awx.main import tasks as awx_tasks
 from awx.main.utils import decrypt_field
 
 # Celery
@@ -153,8 +153,7 @@ class TaskManager():
                 queue_name = queue_name[1 if len(queue_name) > 1 else 0]
                 queues[queue_name] = active_tasks
         else:
-            if not hasattr(settings, 'CELERY_UNIT_TEST'):
-                return (None, None)
+            return (None, None)
 
         return (active_task_queues, queues)
 
@@ -260,7 +259,8 @@ class TaskManager():
         else:
             if type(task) is WorkflowJob:
                 task.status = 'running'
-            if not task.supports_isolation() and rampart_group.controller_id:
+                logger.info('Transitioning %s to running status.', task.log_format)
+            elif not task.supports_isolation() and rampart_group.controller_id:
                 # non-Ansible jobs on isolated instances run on controller
                 task.instance_group = rampart_group.controller
                 logger.info('Submitting isolated %s to queue %s via %s.',
@@ -272,17 +272,22 @@ class TaskManager():
                 task.celery_task_id = str(uuid.uuid4())
                 task.save()
 
-            self.consume_capacity(task, rampart_group.name)
+            if rampart_group is not None:
+                self.consume_capacity(task, rampart_group.name)
 
         def post_commit():
             task.websocket_emit_status(task.status)
             if task.status != 'failed':
-                task.start_celery_task(opts, error_callback=error_handler, success_callback=success_handler, queue=rampart_group.name)
+                if rampart_group is not None:
+                    actual_queue=rampart_group.name
+                else:
+                    actual_queue=settings.CELERY_DEFAULT_QUEUE
+                task.start_celery_task(opts, error_callback=error_handler, success_callback=success_handler, queue=actual_queue)
 
         connection.on_commit(post_commit)
 
     def process_running_tasks(self, running_tasks):
-        map(lambda task: self.graph[task.instance_group.name]['graph'].add_job(task), running_tasks)
+        map(lambda task: self.graph[task.instance_group.name]['graph'].add_job(task) if task.instance_group else None, running_tasks)
 
     def create_project_update(self, task):
         project_task = Project.objects.get(id=task.project_id).create_project_update(
@@ -422,50 +427,53 @@ class TaskManager():
     def process_dependencies(self, dependent_task, dependency_tasks):
         for task in dependency_tasks:
             if self.is_job_blocked(task):
-                logger.debug("Dependent %s is blocked from running", task.log_format)
+                logger.debug(six.text_type("Dependent {} is blocked from running").format(task.log_format))
                 continue
             preferred_instance_groups = task.preferred_instance_groups
             found_acceptable_queue = False
             for rampart_group in preferred_instance_groups:
                 if self.get_remaining_capacity(rampart_group.name) <= 0:
-                    logger.debug("Skipping group %s capacity <= 0", rampart_group.name)
+                    logger.debug(six.text_type("Skipping group {} capacity <= 0").format(rampart_group.name))
                     continue
                 if not self.would_exceed_capacity(task, rampart_group.name):
-                    logger.debug("Starting dependent %s in group %s", task.log_format, rampart_group.name)
+                    logger.debug(six.text_type("Starting dependent {} in group {}").format(task.log_format, rampart_group.name))
                     self.graph[rampart_group.name]['graph'].add_job(task)
                     tasks_to_fail = filter(lambda t: t != task, dependency_tasks)
                     tasks_to_fail += [dependent_task]
                     self.start_task(task, rampart_group, tasks_to_fail)
                     found_acceptable_queue = True
             if not found_acceptable_queue:
-                logger.debug("Dependent %s couldn't be scheduled on graph, waiting for next cycle", task.log_format)
+                logger.debug(six.text_type("Dependent {} couldn't be scheduled on graph, waiting for next cycle").format(task.log_format))
 
     def process_pending_tasks(self, pending_tasks):
         for task in pending_tasks:
             self.process_dependencies(task, self.generate_dependencies(task))
             if self.is_job_blocked(task):
-                logger.debug("%s is blocked from running", task.log_format)
+                logger.debug(six.text_type("{} is blocked from running").format(task.log_format))
                 continue
             preferred_instance_groups = task.preferred_instance_groups
             found_acceptable_queue = False
+            if isinstance(task, WorkflowJob):
+                self.start_task(task, None, task.get_jobs_fail_chain())
+                continue
             for rampart_group in preferred_instance_groups:
                 remaining_capacity = self.get_remaining_capacity(rampart_group.name)
                 if remaining_capacity <= 0:
-                    logger.debug("Skipping group %s, remaining_capacity %s <= 0",
-                                 rampart_group.name, remaining_capacity)
+                    logger.debug(six.text_type("Skipping group {}, remaining_capacity {} <= 0").format(
+                                 rampart_group.name, remaining_capacity))
                     continue
                 if not self.would_exceed_capacity(task, rampart_group.name):
-                    logger.debug("Starting %s in group %s (remaining_capacity=%s)",
-                                 task.log_format, rampart_group.name, remaining_capacity)
+                    logger.debug(six.text_type("Starting {} in group {} (remaining_capacity={})").format(
+                                 task.log_format, rampart_group.name, remaining_capacity))
                     self.graph[rampart_group.name]['graph'].add_job(task)
                     self.start_task(task, rampart_group, task.get_jobs_fail_chain())
                     found_acceptable_queue = True
                     break
                 else:
-                    logger.debug("Not enough capacity to run %s on %s (remaining_capacity=%s)",
-                                 task.log_format, rampart_group.name, remaining_capacity)
+                    logger.debug(six.text_type("Not enough capacity to run {} on {} (remaining_capacity={})").format(
+                                 task.log_format, rampart_group.name, remaining_capacity))
             if not found_acceptable_queue:
-                logger.debug("%s couldn't be scheduled on graph, waiting for next cycle", task.log_format)
+                logger.debug(six.text_type("{} couldn't be scheduled on graph, waiting for next cycle").format(task.log_format))
 
     def fail_jobs_if_not_in_celery(self, node_jobs, active_tasks, celery_task_start_time,
                                    isolated=False):
@@ -498,7 +506,8 @@ class TaskManager():
                 except DatabaseError:
                     logger.error("Task {} DB error in marking failed. Job possibly deleted.".format(task.log_format))
                     continue
-                awx_tasks._send_notification_templates(task, 'failed')
+                if hasattr(task, 'send_notification_templates'):
+                    task.send_notification_templates('failed')
                 task.websocket_emit_status(new_status)
                 logger.error("{}Task {} has no record in celery. Marking as failed".format(
                     'Isolated ' if isolated else '', task.log_format))
@@ -576,9 +585,9 @@ class TaskManager():
         return (task.task_impact + current_capacity > capacity_total)
 
     def consume_capacity(self, task, instance_group):
-        logger.debug('%s consumed %s capacity units from %s with prior total of %s',
+        logger.debug(six.text_type('{} consumed {} capacity units from {} with prior total of {}').format(
                      task.log_format, task.task_impact, instance_group,
-                     self.graph[instance_group]['consumed_capacity'])
+                     self.graph[instance_group]['consumed_capacity']))
         self.graph[instance_group]['consumed_capacity'] += task.task_impact
 
     def get_remaining_capacity(self, instance_group):
@@ -629,4 +638,4 @@ class TaskManager():
 
                 # Operations whose queries rely on modifications made during the atomic scheduling session
                 for wfj in WorkflowJob.objects.filter(id__in=finished_wfjs):
-                    awx_tasks._send_notification_templates(wfj, 'succeeded' if wfj.status == 'successful' else 'failed')
+                    wfj.send_notification_templates('succeeded' if wfj.status == 'successful' else 'failed')

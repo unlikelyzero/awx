@@ -4,7 +4,6 @@
  * All Rights Reserved
  *************************************************/
 
-
 export default ['i18n', function(i18n) {
     return {
 
@@ -17,6 +16,15 @@ export default ['i18n', function(i18n) {
         hover: true,
 
         fields: {
+            invalid: {
+                columnClass: "List-staticColumn--invalidBar",
+                label: '',
+                type: 'invalid',
+                nosort: true,
+                awToolTip: i18n._("Resources are missing from this template."),
+                dataPlacement: 'right',
+                ngShow: '!isValid(schedule)'
+            },
             toggleSchedule: {
                 ngDisabled: "!schedule.summary_fields.user_capabilities.edit",
                 label: '',
@@ -64,8 +72,8 @@ export default ['i18n', function(i18n) {
                 mode: 'all',
                 ngClick: 'addSchedule()',
                 awToolTip: i18n._('Add a new schedule'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: 'canAdd'
             }
         },

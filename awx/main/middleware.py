@@ -20,6 +20,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.apps import apps
 from django.utils.translation import ugettext_lazy as _
 from django.core.urlresolvers import reverse
+from django.urls import resolve
 
 from awx.main.models import ActivityStream
 from awx.main.utils.named_url_graph import generate_graph, GraphNode
@@ -177,7 +178,7 @@ class URLModificationMiddleware(object):
         return '/'.join(url_units)
 
     def process_request(self, request):
-        if 'REQUEST_URI' in request.environ:
+        if hasattr(request, 'environ') and 'REQUEST_URI' in request.environ:
             old_path = six.moves.urllib.parse.urlsplit(request.environ['REQUEST_URI']).path
             old_path = old_path[request.path.find(request.path_info):]
         else:
@@ -193,5 +194,6 @@ class MigrationRanCheckMiddleware(object):
     def process_request(self, request):
         executor = MigrationExecutor(connection)
         plan = executor.migration_plan(executor.loader.graph.leaf_nodes())
-        if bool(plan) and 'migrations_notran' not in request.path:
+        if bool(plan) and \
+                getattr(resolve(request.path), 'url_name', '') != 'migrations_notran':
             return redirect(reverse("ui:migrations_notran"))

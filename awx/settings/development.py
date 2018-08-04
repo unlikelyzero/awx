@@ -9,6 +9,7 @@ import socket
 import copy
 import sys
 import traceback
+import uuid
 
 # Centos-7 doesn't include the svg mime type
 # /usr/lib64/python/mimetypes.py
@@ -19,6 +20,15 @@ from split_settings.tools import optional, include
 
 # Load default settings.
 from defaults import *  # NOQA
+
+# don't use memcache when running tests
+if "pytest" in sys.modules:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'unique-{}'.format(str(uuid.uuid4())),
+        },
+    }
 
 # awx-manage shell_plus --notebook
 NOTEBOOK_ARGUMENTS = [
@@ -67,6 +77,11 @@ CELERYD_LOG_COLOR = True
 
 CALLBACK_QUEUE = "callback_tasks"
 
+# Enable dynamically pulling roles from a requirement.yml file
+# when updating SCM projects
+# Note: This setting may be overridden by database settings.
+AWX_ROLES_ENABLED = True
+
 # Enable PROOT for tower-qa integration tests.
 # Note: This setting may be overridden by database settings.
 AWX_PROOT_ENABLED = True
@@ -102,13 +117,6 @@ if 'django_jenkins' in INSTALLED_APPS:
     PYLINT_RCFILE = ".pylintrc"
 
 INSTALLED_APPS += ('rest_framework_swagger',)
-
-# Much faster than the default
-# https://docs.djangoproject.com/en/1.6/topics/auth/passwords/#how-django-stores-passwords
-PASSWORD_HASHERS = (
-    'django.contrib.auth.hashers.MD5PasswordHasher',
-    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
-)
 
 # Configure a default UUID for development only.
 SYSTEM_UUID = '00000000-0000-0000-0000-000000000000'
@@ -149,8 +157,6 @@ SERVICE_NAME_DICT = {
     "uwsgi": "uwsgi",
     "daphne": "daphne",
     "nginx": "nginx"}
-# Used for sending commands in automatic restart
-UWSGI_FIFO_LOCATION = '/awxfifo'
 
 try:
     socket.gethostbyname('docker.for.mac.internal')

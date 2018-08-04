@@ -1,4 +1,5 @@
 <div class="CapacityAdjuster">
+    <span class="CapacityAdjuster-valueLabel">{{ state.capacity_adjustment }}</span>
     <div class="at-InputSlider">
         <p>{{min_capacity.label}} {{min_capacity.value}}</p>
             <input string-to-number
@@ -7,6 +8,7 @@
             min="0"
             max="1"
             step="0.1"
+            ng-disabled="{{disabled}}"
             ng-change="vm.slide(state)"/>
         <p>{{max_capacity.label}} {{max_capacity.value}}</p>
     </div>

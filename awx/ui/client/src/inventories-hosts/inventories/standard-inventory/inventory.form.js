@@ -10,25 +10,8 @@
  * @description This form is for adding/editing an inventory
  */
 
-export default ['i18n', 'InventoryCompletedJobsList',
-function(i18n, InventoryCompletedJobsList) {
-
-    var completed_jobs_object = {
-        name: 'completed_jobs',
-        index: false,
-        basePath: "unified_jobs",
-        include: "InventoryCompletedJobsList",
-        title: i18n._('Completed Jobs'),
-        iterator: 'completed_job',
-        generateList: true,
-        skipGenerator: true,
-        search: {
-            "or__job__inventory": ''
-        }
-    };
-    let clone = _.clone(InventoryCompletedJobsList);
-    completed_jobs_object = angular.extend(clone, completed_jobs_object);
-
+export default ['i18n',
+function(i18n) {
     return {
 
         addTitle: i18n._('NEW INVENTORY'),
@@ -132,8 +115,8 @@ function(i18n, InventoryCompletedJobsList) {
                         label: i18n._('Add'),
                         ngClick: "$state.go('.add')",
                         awToolTip: i18n._('Add a permission'),
-                        actionClass: 'btn List-buttonSubmit',
-                        buttonContent: '&#43; ADD',
+                        actionClass: 'at-Button--add',
+                        actionId: 'button-add',
                         ngShow: '(inventory_obj.summary_fields.user_capabilities.edit || canAdd)'
 
                     }
@@ -185,7 +168,10 @@ function(i18n, InventoryCompletedJobsList) {
                 iterator: 'inventory_source',
                 skipGenerator: true
             },
-            completed_jobs: completed_jobs_object
+            completed_jobs: {
+                title: i18n._('Completed Jobs'),
+                skipGenerator: true
+            }
         },
         relatedButtons: {
             remediate_inventory: {

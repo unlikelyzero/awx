@@ -15,10 +15,6 @@ import InstanceGroupsListController from './list/instance-groups-list.controller
 import InstancesTemplate from './instances/instances-list.partial.html';
 import InstanceListController from './instances/instances.controller';
 
-import JobsTemplate from './jobs/jobs-list.partial.html';
-import InstanceGroupJobsListController from './jobs/jobs.controller';
-import InstanceJobsListController from './instances/instance-jobs/instance-jobs.controller';
-
 import InstanceModalTemplate from './instances/instance-modal.partial.html';
 import InstanceModalController from './instances/instance-modal.controller.js';
 
@@ -26,7 +22,9 @@ import list from './instance-groups.list';
 import service from './instance-groups.service';
 
 import InstanceGroupsStrings from './instance-groups.strings';
-import JobStrings from './jobs/jobs.strings';
+
+import instanceGroupJobsRoute from '~features/jobs/routes/instanceGroupJobs.route.js';
+import instanceJobsRoute from '~features/jobs/routes/instanceJobs.route.js';
 
 const MODULE_NAME = 'instanceGroups';
 
@@ -37,15 +35,12 @@ function InstanceGroupsResolve ($q, $stateParams, InstanceGroup, Instance) {
 
     if (!instanceGroupId && !instanceId) {
         promises.instanceGroup = new InstanceGroup(['get', 'options']);
-        promises.instance = new Instance(['get', 'options']);
-
         return $q.all(promises);
     }
 
     if (instanceGroupId && instanceId) {
         promises.instance = new Instance(['get', 'options'], [instanceId, instanceId])
             .then((instance) => instance.extend('get', 'jobs', {params: {page_size: "10", order_by: "-finished"}}));
-
         return $q.all(promises);
     }
 
@@ -113,6 +108,14 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
         ncyBreadcrumb: {
             label: strings.get('state.ADD_BREADCRUMB_LABEL')
         },
+        params: {
+            instance_search: {
+                value: {
+                    order_by: 'hostname',
+                    page_size: '10'
+                }
+            }
+        },
         views: {
             'add@instanceGroups': {
                 templateUrl: AddEditTemplate,
@@ -121,7 +124,17 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
             }
         },
         resolve: {
-            resolvedModels: InstanceGroupsResolve
+            resolvedModels: InstanceGroupsResolve,
+            Dataset: [
+                '$stateParams',
+                'GetBasePath',
+                'QuerySet',
+                ($stateParams, GetBasePath, qs) => {
+                    const searchParams = $stateParams.instance_search;
+                    const searchPath = GetBasePath('instances');
+                    return qs.search(searchPath, searchParams);
+                }
+            ]
         }
     });
 
@@ -148,8 +161,7 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
             "modal": {
                 template: '<instance-list-policy></instance-list-policy>',
             }
-        },
-        resolvedModels: InstanceGroupsResolve
+        }
     });
 
     $stateExtender.addState({
@@ -157,6 +169,14 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
         route: '/:instance_group_id',
         ncyBreadcrumb: {
             label: strings.get('state.EDIT_BREADCRUMB_LABEL')
+        },
+        params: {
+            instance_search: {
+                value: {
+                    order_by: 'hostname',
+                    page_size: '10'
+                }
+            }
         },
         views: {
             'edit@instanceGroups': {
@@ -166,7 +186,17 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
             }
         },
         resolve: {
-            resolvedModels: InstanceGroupsResolve
+            resolvedModels: InstanceGroupsResolve,
+            Dataset: [
+                '$stateParams',
+                'GetBasePath',
+                'QuerySet',
+                ($stateParams, GetBasePath, qs) => {
+                    const searchParams = $stateParams.instance_search;
+                    const searchPath = GetBasePath('instances');
+                    return qs.search(searchPath, searchParams);
+                }
+            ]
         }
     });
 
@@ -194,8 +224,7 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
             "modal": {
                 template: '<instance-list-policy></instance-list-policy>',
             }
-        },
-        resolvedModels: InstanceGroupsResolve
+        }
     });
 
     $stateExtender.addState({
@@ -255,73 +284,8 @@ function InstanceGroupsRun ($stateExtender, strings, ComponentsStrings) {
         resolvedModels: InstanceGroupsResolve
     });
 
-    $stateExtender.addState({
-        name: 'instanceGroups.instanceJobs',
-        url: '/:instance_group_id/instances/:instance_id/jobs',
-        ncyBreadcrumb: {
-            parent: 'instanceGroups.instances',
-            label: ComponentsStrings.get('layout.JOBS')
-        },
-        views: {
-            'instanceJobs@instanceGroups': {
-                templateUrl: JobsTemplate,
-                controller: 'InstanceJobsListController',
-                controllerAs: 'vm'
-            },
-        },
-        params: {
-            job_search: {
-                value: {
-                    page_size: '10',
-                    order_by: '-finished'
-                },
-                dynamic: true
-            },
-        },
-        data: {
-            socket: {
-                "groups": {
-                    "jobs": ["status_changed"],
-                }
-            }
-        },
-        resolvedModels: InstanceGroupsResolve
-    });
-
-    $stateExtender.addState({
-        name: 'instanceGroups.jobs',
-        url: '/:instance_group_id/jobs',
-        ncyBreadcrumb: {
-            parent: 'instanceGroups.edit',
-            label: ComponentsStrings.get('layout.JOBS')
-        },
-        params: {
-            job_search: {
-                value: {
-                    page_size: '10',
-                    order_by: '-finished'
-                },
-                dynamic: true
-            }
-        },
-        data: {
-            socket: {
-                "groups": {
-                    "jobs": ["status_changed"],
-                }
-            }
-        },
-        views: {
-            'jobs@instanceGroups': {
-                templateUrl: JobsTemplate,
-                controller: 'InstanceGroupJobsListController',
-                controllerAs: 'vm'
-            },
-        },
-        resolve: {
-            resolvedModels: InstanceGroupsResolve
-        }
-    });
+    $stateExtender.addState(instanceJobsRoute);
+    $stateExtender.addState(instanceGroupJobsRoute);
 }
 
 InstanceGroupsRun.$inject = [
@@ -334,16 +298,13 @@ angular.module(MODULE_NAME, [])
     .service('InstanceGroupsService', service)
     .factory('InstanceGroupList', list)
     .controller('InstanceGroupsListController', InstanceGroupsListController)
-    .controller('InstanceGroupJobsListController', InstanceGroupJobsListController)
     .controller('InstanceListController', InstanceListController)
-    .controller('InstanceJobsListController', InstanceJobsListController)
     .directive('instanceListPolicy', InstanceListPolicy)
     .directive('instanceGroupsMultiselect', instanceGroupsMultiselect)
     .directive('instanceGroupsModal', instanceGroupsModal)
     .directive('capacityAdjuster', CapacityAdjuster)
     .directive('capacityBar', CapacityBar)
     .service('InstanceGroupsStrings', InstanceGroupsStrings)
-    .service('JobStrings', JobStrings)
     .run(InstanceGroupsRun);
 
 export default MODULE_NAME;

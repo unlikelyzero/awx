@@ -184,8 +184,22 @@ def create_rhv_tower_credtype(apps, schema_editor):
     CredentialType.setup_tower_managed_defaults()
 
 
+def add_tower_verify_field(apps, schema_editor):
+    tower_credtype = CredentialType.objects.get(
+        kind='cloud', name='Ansible Tower', managed_by_tower=True
+    )
+    tower_credtype.inputs = CredentialType.defaults.get('tower')().inputs
+    tower_credtype.save()
+
+
 def add_azure_cloud_environment_field(apps, schema_editor):
     azure_rm_credtype = CredentialType.objects.get(kind='cloud',
                                                    name='Microsoft Azure Resource Manager')
     azure_rm_credtype.inputs = CredentialType.defaults.get('azure_rm')().inputs
     azure_rm_credtype.save()
+
+
+def remove_become_methods(apps, schema_editor):
+    become_credtype = CredentialType.objects.filter(kind='ssh', managed_by_tower=True).first()
+    become_credtype.inputs = CredentialType.defaults.get('ssh')().inputs
+    become_credtype.save()

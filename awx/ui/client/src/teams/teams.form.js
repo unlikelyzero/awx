@@ -19,7 +19,10 @@ export default ['i18n', function(i18n) {
             // the top-most node of generated state tree
             stateTree: 'teams',
             tabs: true,
-
+            messageBar: {
+                ngShow: 'isOrgAdmin && !canEdit',
+                message: i18n._("Contact your System Administrator to grant you the appropriate permissions to add and edit Users and Teams.")
+            },
             fields: {
                 name: {
                     label: i18n._('Name'),
@@ -81,8 +84,8 @@ export default ['i18n', function(i18n) {
                             ngClick: "$state.go('.add')",
                             label: i18n._('Add'),
                             awToolTip: i18n._('Add User'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; ' + i18n._('ADD'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(team_obj.summary_fields.user_capabilities.edit || canAdd)'
                         }
                     },
@@ -153,8 +156,8 @@ export default ['i18n', function(i18n) {
                             ngClick: "$state.go('.add')",
                             label: 'Add',
                             awToolTip: i18n._('Grant Permission'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; ' + i18n._('ADD PERMISSIONS'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(team_obj.summary_fields.user_capabilities.edit || canAdd)'
                         }
                     }

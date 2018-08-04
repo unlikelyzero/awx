@@ -879,14 +879,15 @@ input[type="checkbox"].checkbox-no-label {
 
 .checkbox-options {
   font-weight: normal;
-  padding-right: 20px;
 }
 
 /* Display list actions next to search widget */
 .list-actions {
-    text-align: right;
-    margin-bottom: -34px;
+    display: flex;
     height: 34px;
+    justify-content: flex-end;
+    margin-bottom: -34px;
+    text-align: right;
 
     .fa-lg {
         vertical-align: -8%;
@@ -2326,6 +2327,10 @@ body {
     padding: 20px;
     border: 1px solid @panel-border;
     margin-top: 20px;
+}
+
+.Panel--noBottomPadding {
+    padding-bottom: 0px;
 }
 
 .Panel-hidden {

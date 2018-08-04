@@ -6,16 +6,18 @@
 
 export default ['$scope', 'Rest', 'TeamList', 'Prompt',
     'ProcessErrors', 'GetBasePath', 'Wait', '$state', '$filter',
-    'rbacUiControlService', 'Dataset', 'i18n',
+    'rbacUiControlService', 'Dataset', 'resolvedModels', 'i18n',
     function($scope, Rest, TeamList, Prompt, ProcessErrors,
-    GetBasePath, Wait, $state, $filter, rbacUiControlService, Dataset, i18n) {
+    GetBasePath, Wait, $state, $filter, rbacUiControlService, Dataset, models, i18n) {
 
+        const { me } = models;
         var list = TeamList,
             defaultUrl = GetBasePath('teams');
 
         init();
 
         function init() {
+            $scope.canEdit = me.get('summary_fields.user_capabilities.edit');
             $scope.canAdd = false;
 
             rbacUiControlService.canAdd('teams')
@@ -26,9 +28,6 @@ export default ['$scope', 'Rest', 'TeamList', 'Prompt',
             $scope.list = list;
             $scope[`${list.iterator}_dataset`] = Dataset.data;
             $scope[list.name] = $scope[`${list.iterator}_dataset`].results;
-            _.forEach($scope[list.name], (team) => {
-                team.organization_name = team.summary_fields.organization.name;
-            });
 
             $scope.selected = [];
         }

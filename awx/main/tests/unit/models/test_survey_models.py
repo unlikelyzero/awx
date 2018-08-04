@@ -1,16 +1,29 @@
 import tempfile
 import json
-
+import yaml
 import pytest
+from itertools import count
+
 from awx.main.utils.encryption import encrypt_value
 from awx.main.tasks import RunJob
 from awx.main.models import (
     Job,
     JobTemplate,
+    JobLaunchConfig,
     WorkflowJobTemplate
 )
+from awx.main.utils.safe_yaml import SafeLoader
 
 ENCRYPTED_SECRET = encrypt_value('secret')
+
+
+class DistinctParametrize(object):
+
+    def __init__(self):
+        self._gen = count(0)
+
+    def __call__(self, value):
+        return str(next(self._gen))
 
 
 @pytest.mark.survey
@@ -121,7 +134,7 @@ def test_job_safe_args_redacted_passwords(job):
     safe_args = run_job.build_safe_args(job, **kwargs)
     ev_index = safe_args.index('-e') + 1
     extra_var_file = open(safe_args[ev_index][1:], 'r')
-    extra_vars = json.load(extra_var_file)
+    extra_vars = yaml.load(extra_var_file, SafeLoader)
     extra_var_file.close()
     assert extra_vars['secret_key'] == '$encrypted$'
 
@@ -132,9 +145,30 @@ def test_job_args_unredacted_passwords(job, tmpdir_factory):
     args = run_job.build_args(job, **kwargs)
     ev_index = args.index('-e') + 1
     extra_var_file = open(args[ev_index][1:], 'r')
-    extra_vars = json.load(extra_var_file)
+    extra_vars = yaml.load(extra_var_file, SafeLoader)
     extra_var_file.close()
     assert extra_vars['secret_key'] == 'my_password'
+
+
+def test_launch_config_has_unprompted_vars(survey_spec_factory):
+    jt = JobTemplate(
+        survey_enabled = True,
+        survey_spec = survey_spec_factory(['question1', 'question2'])
+    )
+    unprompted_config = JobLaunchConfig(
+        extra_data = {
+            'question1': 'foobar',
+            'question4': 'foobar'
+        }
+    )
+    assert unprompted_config.has_unprompted(jt)
+    allowed_config = JobLaunchConfig(
+        extra_data = {
+            'question1': 'foobar',
+            'question2': 'foobar'
+        }
+    )
+    assert not allowed_config.has_unprompted(jt)
 
 
 @pytest.mark.survey
@@ -219,7 +253,7 @@ def test_optional_survey_question_defaults(
     ('password', 'foo', 5, {'extra_vars': {'x': ''}}, {'x': ''}),
     ('password', ENCRYPTED_SECRET, 5, {'extra_vars': {'x': '$encrypted$'}}, {}),
     ('password', ENCRYPTED_SECRET, 10, {'extra_vars': {'x': '$encrypted$'}}, {'x': ENCRYPTED_SECRET}),
-])
+], ids=DistinctParametrize())
 def test_survey_encryption_defaults(survey_spec_factory, question_type, default, maxlen, kwargs, expected):
     spec = survey_spec_factory([
         {

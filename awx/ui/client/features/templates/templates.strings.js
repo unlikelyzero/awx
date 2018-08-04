@@ -10,7 +10,6 @@ function TemplatesStrings (BaseString) {
 
     ns.list = {
         PANEL_TITLE: t.s('TEMPLATES'),
-        ADD_BUTTON_LABEL: t.s('ADD'),
         ADD_DD_JT_LABEL: t.s('Job Template'),
         ADD_DD_WF_LABEL: t.s('Workflow Template'),
         ROW_ITEM_LABEL_ACTIVITY: t.s('Activity'),
@@ -28,11 +27,13 @@ function TemplatesStrings (BaseString) {
         SURVEY: t.s('Survey'),
         PREVIEW: t.s('Preview'),
         LAUNCH: t.s('LAUNCH'),
+        CONFIRM: t.s('CONFIRM'),
         SELECTED: t.s('SELECTED'),
         NO_CREDENTIALS_SELECTED: t.s('No credentials selected'),
         NO_INVENTORY_SELECTED: t.s('No inventory selected'),
         REVERT: t.s('REVERT'),
         CREDENTIAL_TYPE: t.s('Credential Type'),
+        CREDENTIAL_PASSWORD_WARNING: t.s('Credentials that require passwords on launch are not permitted for template schedules and workflow nodes.  The following credentials must be removed or replaced to proceed:'),
         PASSWORDS_REQUIRED_HELP: t.s('Launching this job requires the passwords listed below. Enter and confirm each password before continuing.'),
         PLEASE_ENTER_PASSWORD: t.s('Please enter a password.'),
         credential_passwords: {
@@ -50,12 +51,15 @@ function TemplatesStrings (BaseString) {
         CHOOSE_JOB_TYPE: t.s('Choose a job type'),
         CHOOSE_VERBOSITY: t.s('Choose a verbosity'),
         EXTRA_VARIABLES: t.s('Extra Variables'),
+        EXTRA_VARIABLES_HELP: t.s('<p>Pass extra command line variables to the playbook. This is the -e or --extra-vars command line parameter for ansible-playbook. Provide key/value pairs using either YAML or JSON.</p>JSON:<br /><blockquote>{<br />&quot;somevar&quot;: &quot;somevalue&quot;,<br />&quot;password&quot;: &quot;magic&quot;<br /> }</blockquote>YAML:<br /><blockquote>---<br />somevar: somevalue<br />password: magic<br /></blockquote>'),
         PLEASE_ENTER_ANSWER: t.s('Please enter an answer.'),
+        PLEASE_SELECT_VALUE: t.s('Please select a value'),
         VALID_INTEGER: t.s('Please enter an answer that is a valid integer.'),
         VALID_DECIMAL: t.s('Please enter an answer that is a decimal number.'),
         PLAYBOOK_RUN: t.s('Playbook Run'),
         CHECK: t.s('Check'),
-        NO_CREDS_MATCHING_TYPE: t.s('No Credentials Matching This Type Have Been Created'), 
+        NO_CREDS_MATCHING_TYPE: t.s('No Credentials Matching This Type Have Been Created'),
+        CREDENTIAL_TYPE_MISSING: typeLabel => t.s('This job template has a default {{typeLabel}} credential which must be included or replaced before proceeding.', { typeLabel })
     };
 
     ns.alert  = {
@@ -81,11 +85,16 @@ function TemplatesStrings (BaseString) {
         UNKNOWN: t.s('Unable to determine template type.'),
         SCHEDULE: t.s('Unable to schedule job.'),
         COPY: t.s('Unable to copy template.'),
+        INVALID: t.s('Resources are missing from this template.')
     };
 
     ns.warnings = {
         WORKFLOW_RESTRICTED_COPY: t.s('You do not have access to all resources used by this workflow. Resources that you don\'t have access to will not be copied and will result in an incomplete workflow.')
-    }
+    };
+
+    ns.workflows = {
+        INVALID_JOB_TEMPLATE: t.s('This Job Template is missing a default inventory or project. This must be addressed in the Job Template form before this node can be saved.')
+    };
 }
 
 TemplatesStrings.$inject = ['BaseStringService'];

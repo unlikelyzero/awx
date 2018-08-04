@@ -20,6 +20,7 @@ from awx.main.notifications.pagerduty_backend import PagerDutyBackend
 from awx.main.notifications.hipchat_backend import HipChatBackend
 from awx.main.notifications.webhook_backend import WebhookBackend
 from awx.main.notifications.mattermost_backend import MattermostBackend
+from awx.main.notifications.rocketchat_backend import RocketChatBackend
 from awx.main.notifications.irc_backend import IrcBackend
 from awx.main.fields import JSONField
 
@@ -38,6 +39,7 @@ class NotificationTemplate(CommonModelNameNotUnique):
                           ('hipchat', _('HipChat'), HipChatBackend),
                           ('webhook', _('Webhook'), WebhookBackend),
                           ('mattermost', _('Mattermost'), MattermostBackend),
+                          ('rocketchat', _('Rocket.Chat'), RocketChatBackend),
                           ('irc', _('IRC'), IrcBackend)]
     NOTIFICATION_TYPE_CHOICES = [(x[0], x[1]) for x in NOTIFICATION_TYPES]
     CLASS_FOR_NOTIFICATION_TYPE = dict([(x[0], x[2]) for x in NOTIFICATION_TYPES])
@@ -209,3 +211,27 @@ class JobNotificationMixin(object):
 
     def build_notification_failed_message(self):
         return self._build_notification_message('failed')
+
+    def send_notification_templates(self, status_str):
+        from awx.main.tasks import send_notifications  # avoid circular import
+        if status_str not in ['succeeded', 'failed']:
+            raise ValueError(_("status_str must be either succeeded or failed"))
+        try:
+            notification_templates = self.get_notification_templates()
+        except Exception:
+            logger.warn("No notification template defined for emitting notification")
+            notification_templates = None
+        if notification_templates:
+            if status_str == 'succeeded':
+                notification_template_type = 'success'
+            else:
+                notification_template_type = 'error'
+            all_notification_templates = set(notification_templates.get(notification_template_type, []) + notification_templates.get('any', []))
+            if len(all_notification_templates):
+                try:
+                    (notification_subject, notification_body) = getattr(self, 'build_notification_%s_message' % status_str)()
+                except AttributeError:
+                    raise NotImplementedError("build_notification_%s_message() does not exist" % status_str)
+                send_notifications.delay([n.generate_notification(notification_subject, notification_body).id
+                                          for n in all_notification_templates],
+                                         job_id=self.id)

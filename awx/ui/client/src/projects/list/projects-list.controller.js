@@ -73,8 +73,8 @@ export default ['$scope', '$rootScope', '$log', 'Rest', 'Alert',
         function buildTooltips(project) {
             project.statusIcon = GetProjectIcon(project.status);
             project.statusTip = GetProjectToolTip(project.status);
-            project.scm_update_tooltip = i18n._("Start an SCM update");
-            project.scm_schedule_tooltip = i18n._("Schedule future SCM updates");
+            project.scm_update_tooltip = i18n._("Get latest SCM revision");
+            project.scm_schedule_tooltip = i18n._("Schedule SCM revision updates");
             project.scm_type_class = "";
 
             if (project.status === 'failed' && project.summary_fields.last_update && project.summary_fields.last_update.status === 'canceled') {
@@ -146,7 +146,7 @@ export default ['$scope', '$rootScope', '$log', 'Rest', 'Alert',
                 // Grab the id from summary_fields
                 var id = (data.summary_fields.current_update) ? data.summary_fields.current_update.id : data.summary_fields.last_update.id;
 
-                $state.go('scmUpdateStdout', { id: id });
+                $state.go('output', { id: id, type: 'project'}, { reload: true });
 
             } else {
                 Alert(i18n._('No Updates Available'), i18n._('There is no SCM update information available for this project. An update has not yet been ' +
@@ -241,7 +241,7 @@ export default ['$scope', '$rootScope', '$log', 'Rest', 'Alert',
                         resourceName: $filter('sanitize')(name),
                         body: deleteModalBody,
                         action: action,
-                        actionText: 'DELETE'
+                        actionText: i18n._('DELETE')
                     });
                 });
         };
@@ -332,7 +332,7 @@ export default ['$scope', '$rootScope', '$log', 'Rest', 'Alert',
         $scope.editSchedules = function(id) {
             var project = Find({ list: $scope.projects, key: 'id', val: id });
             if (!(project.scm_type === "Manual" || Empty(project.scm_type)) && !(project.status === 'updating' || project.status === 'running' || project.status === 'pending')) {
-                $state.go('projectSchedules', { id: id });
+                $state.go('projects.edit.schedules', { project_id: id });
             }
         };
     }

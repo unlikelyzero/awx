@@ -38,6 +38,8 @@ from awx.main.utils import (
     copy_model_by_class, copy_m2m_relationships,
     get_type_for_model, parse_yaml_or_json
 )
+from awx.main.utils import polymorphic
+from awx.main.constants import ACTIVE_STATES, CAN_CANCEL
 from awx.main.redact import UriCleaner, REPLACE_STR
 from awx.main.consumers import emit_channel_notification
 from awx.main.fields import JSONField, AskForField
@@ -46,8 +48,7 @@ __all__ = ['UnifiedJobTemplate', 'UnifiedJob', 'StdoutMaxBytesExceeded']
 
 logger = logging.getLogger('awx.main.models.unified_jobs')
 
-CAN_CANCEL = ('new', 'pending', 'waiting', 'running')
-ACTIVE_STATES = CAN_CANCEL
+# NOTE: ACTIVE_STATES moved to constants because it is used by parent modules
 
 
 class UnifiedJobTemplate(PolymorphicModel, CommonModelNameNotUnique, NotificationFieldsModel):
@@ -88,9 +89,6 @@ class UnifiedJobTemplate(PolymorphicModel, CommonModelNameNotUnique, Notificatio
     ]
 
     ALL_STATUS_CHOICES = OrderedDict(PROJECT_STATUS_CHOICES + INVENTORY_SOURCE_STATUS_CHOICES + JOB_TEMPLATE_STATUS_CHOICES + DEPRECATED_STATUS_CHOICES).items()
-
-    # NOTE: Working around a django-polymorphic issue: https://github.com/django-polymorphic/django-polymorphic/issues/229
-    base_manager_name = 'base_objects'
 
     class Meta:
         app_label = 'main'
@@ -181,12 +179,6 @@ class UnifiedJobTemplate(PolymorphicModel, CommonModelNameNotUnique, Notificatio
             return super(UnifiedJobTemplate, self).unique_error_message(model_class, unique_check)
 
     @classmethod
-    def invalid_user_capabilities_prefetch_models(cls):
-        if cls != UnifiedJobTemplate:
-            return []
-        return ['project', 'inventorysource', 'systemjobtemplate']
-
-    @classmethod
     def _submodels_with_roles(cls):
         ujt_classes = [c for c in cls.__subclasses__()
                        if c._meta.model_name not in ['inventorysource', 'systemjobtemplate']]
@@ -271,14 +263,7 @@ class UnifiedJobTemplate(PolymorphicModel, CommonModelNameNotUnique, Notificatio
                 if field not in update_fields:
                     update_fields.append(field)
         # Do the actual save.
-        try:
-            super(UnifiedJobTemplate, self).save(*args, **kwargs)
-        except ValueError:
-            # A fix for https://trello.com/c/S4rU1F21
-            # Does not resolve the root cause. Tis merely a bandaid.
-            if 'scm_delete_on_next_update' in update_fields:
-                update_fields.remove('scm_delete_on_next_update')
-                super(UnifiedJobTemplate, self).save(*args, **kwargs)
+        super(UnifiedJobTemplate, self).save(*args, **kwargs)
 
 
     def _get_current_status(self):
@@ -542,15 +527,16 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
 
     PASSWORD_FIELDS = ('start_args',)
 
-    # NOTE: Working around a django-polymorphic issue: https://github.com/django-polymorphic/django-polymorphic/issues/229
-    base_manager_name = 'base_objects'
-
     class Meta:
         app_label = 'main'
 
     old_pk = models.PositiveIntegerField(
         null=True,
         default=None,
+        editable=False,
+    )
+    emitted_events = models.PositiveIntegerField(
+        default=0,
         editable=False,
     )
     unified_job_template = models.ForeignKey(
@@ -671,7 +657,7 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
         blank=True,
         null=True,
         default=None,
-        on_delete=models.SET_NULL,
+        on_delete=polymorphic.SET_NULL,
         help_text=_('The Rampart/Instance group the job was run under'),
     )
     credentials = models.ManyToManyField(
@@ -729,7 +715,10 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
     def _get_parent_instance(self):
         return getattr(self, self._get_parent_field_name(), None)
 
-    def _update_parent_instance_no_save(self, parent_instance, update_fields=[]):
+    def _update_parent_instance_no_save(self, parent_instance, update_fields=None):
+        if update_fields is None:
+            update_fields = []
+
         def parent_instance_set(key, val):
             setattr(parent_instance, key, val)
             if key not in update_fields:
@@ -849,8 +838,11 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
                 setattr(unified_job, fd, val)
             unified_job.save()
 
-        # Labels coppied here
-        copy_m2m_relationships(self, unified_job, fields)
+        # Labels copied here
+        from awx.main.signals import disable_activity_stream
+        with disable_activity_stream():
+            copy_m2m_relationships(self, unified_job, fields)
+
         return unified_job
 
     def launch_prompts(self):
@@ -875,8 +867,11 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
         JobLaunchConfig = self._meta.get_field('launch_config').related_model
         config = JobLaunchConfig(job=self)
         valid_fields = self.unified_job_template.get_ask_mapping().keys()
+        # Special cases allowed for workflows
         if hasattr(self, 'extra_vars'):
             valid_fields.extend(['survey_passwords', 'extra_vars'])
+        else:
+            kwargs.pop('survey_passwords', None)
         for field_name, value in kwargs.items():
             if field_name not in valid_fields:
                 raise Exception('Unrecognized launch config field {}.'.format(field_name))
@@ -910,6 +905,33 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
         related = UnifiedJobDeprecatedStdout.objects.get(pk=self.pk)
         related.result_stdout_text = value
         related.save()
+
+    @property
+    def event_parent_key(self):
+        tablename = self._meta.db_table
+        return {
+            'main_job': 'job_id',
+            'main_adhoccommand': 'ad_hoc_command_id',
+            'main_projectupdate': 'project_update_id',
+            'main_inventoryupdate': 'inventory_update_id',
+            'main_systemjob': 'system_job_id',
+        }[tablename]
+
+    def get_event_queryset(self):
+        return self.event_class.objects.filter(**{self.event_parent_key: self.id})
+
+    @property
+    def event_processing_finished(self):
+        '''
+        Returns True / False, whether all events from job have been saved
+        '''
+        if self.status in ACTIVE_STATES:
+            return False  # tally of events is only available at end of run
+        try:
+            event_qs = self.get_event_queryset()
+        except NotImplementedError:
+            return True  # Model without events, such as WFJT
+        return self.emitted_events == event_qs.count()
 
     def result_stdout_raw_handle(self, enforce_max_bytes=True):
         """
@@ -966,20 +988,12 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
             # (`stdout`) directly to a file
 
             with connection.cursor() as cursor:
-                tablename = self._meta.db_table
-                related_name = {
-                    'main_job': 'job_id',
-                    'main_adhoccommand': 'ad_hoc_command_id',
-                    'main_projectupdate': 'project_update_id',
-                    'main_inventoryupdate': 'inventory_update_id',
-                    'main_systemjob': 'system_job_id',
-                }[tablename]
 
                 if enforce_max_bytes:
                     # detect the length of all stdout for this UnifiedJob, and
                     # if it exceeds settings.STDOUT_MAX_BYTES_DISPLAY bytes,
                     # don't bother actually fetching the data
-                    total = self.event_class.objects.filter(**{related_name: self.id}).aggregate(
+                    total = self.get_event_queryset().aggregate(
                         total=models.Sum(models.Func(models.F('stdout'), function='LENGTH'))
                     )['total']
                     if total > max_supported:
@@ -987,8 +1001,8 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
 
                 cursor.copy_expert(
                     "copy (select stdout from {} where {}={} order by start_line) to stdout".format(
-                        tablename + 'event',
-                        related_name,
+                        self._meta.db_table + 'event',
+                        self.event_parent_key,
                         self.id
                     ),
                     fd
@@ -1248,10 +1262,6 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
         if not all(opts.values()):
             return False
 
-        # Sanity check: If we are running unit tests, then run synchronously.
-        if getattr(settings, 'CELERY_UNIT_TEST', False):
-            return self.start(None, None, **kwargs)
-
         # Save the pending status, and inform the SocketIO listener.
         self.update_fields(start_args=json.dumps(kwargs), status='pending')
         self.websocket_emit_status("pending")
@@ -1370,6 +1380,9 @@ class UnifiedJob(PolymorphicModel, PasswordFieldsModel, CommonModelNameNotUnique
             for name in ('awx', 'tower'):
                 r['{}_user_id'.format(name)] = self.created_by.pk
                 r['{}_user_name'.format(name)] = self.created_by.username
+                r['{}_user_email'.format(name)] = self.created_by.email
+                r['{}_user_first_name'.format(name)] = self.created_by.first_name
+                r['{}_user_last_name'.format(name)] = self.created_by.last_name
         else:
             wj = self.get_workflow_job()
             if wj:

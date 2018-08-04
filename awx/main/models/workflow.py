@@ -24,7 +24,12 @@ from awx.main.models.rbac import (
     ROLE_SINGLETON_SYSTEM_AUDITOR
 )
 from awx.main.fields import ImplicitRoleField
-from awx.main.models.mixins import ResourceMixin, SurveyJobTemplateMixin, SurveyJobMixin
+from awx.main.models.mixins import (
+    ResourceMixin,
+    SurveyJobTemplateMixin,
+    SurveyJobMixin,
+    RelatedJobsMixin,
+)
 from awx.main.models.jobs import LaunchTimeConfig
 from awx.main.models.credential import Credential
 from awx.main.redact import REPLACE_STR
@@ -287,7 +292,7 @@ class WorkflowJobOptions(BaseModel):
         return new_workflow_job
 
 
-class WorkflowJobTemplate(UnifiedJobTemplate, WorkflowJobOptions, SurveyJobTemplateMixin, ResourceMixin):
+class WorkflowJobTemplate(UnifiedJobTemplate, WorkflowJobOptions, SurveyJobTemplateMixin, ResourceMixin, RelatedJobsMixin):
 
     SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name', 'organization')]
     FIELDS_TO_PRESERVE_AT_COPY = [
@@ -384,10 +389,7 @@ class WorkflowJobTemplate(UnifiedJobTemplate, WorkflowJobOptions, SurveyJobTempl
         return prompted_fields, rejected_fields, errors_dict
 
     def can_start_without_user_input(self):
-        return not bool(
-            self.variables_needed_to_start or
-            self.node_templates_missing() or
-            self.node_prompts_rejected())
+        return not bool(self.variables_needed_to_start)
 
     def node_templates_missing(self):
         return [node.pk for node in self.workflow_job_template_nodes.filter(
@@ -404,6 +406,12 @@ class WorkflowJobTemplate(UnifiedJobTemplate, WorkflowJobOptions, SurveyJobTempl
             if prompts_errors:
                 node_list.append(node.pk)
         return node_list
+
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return WorkflowJob.objects.filter(workflow_job_template=self)
 
 
 class WorkflowJob(UnifiedJob, WorkflowJobOptions, SurveyJobMixin, JobNotificationMixin):
@@ -466,7 +474,7 @@ class WorkflowJob(UnifiedJob, WorkflowJobOptions, SurveyJobMixin, JobNotificatio
 
     @property
     def preferred_instance_groups(self):
-        return self.global_instance_groups
+        return []
 
     '''
     A WorkflowJob is a virtual job. It doesn't result in a celery task.

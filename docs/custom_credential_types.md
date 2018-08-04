@@ -67,7 +67,7 @@ new "custom" ``Credential Types``:
                 "id": "api_token",
                 "label": "API Token",
                 "type": "string",
-                "secret": True,
+                "secret": true
             }]
         },
         "injectors": {
@@ -177,7 +177,7 @@ certificate/key data:
             "template": "[mycloud]\ntoken={{api_token}}"
         },
         "env": {
-            "MY_CLOUD_INI_FILE": "{{tower.filename}"
+            "MY_CLOUD_INI_FILE": "{{tower.filename}}"
         }
     }
 

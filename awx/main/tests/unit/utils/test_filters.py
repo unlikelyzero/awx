@@ -5,12 +5,43 @@ import mock
 from collections import namedtuple
 
 # AWX
-from awx.main.utils.filters import SmartFilter
+from awx.main.utils.filters import SmartFilter, ExternalLoggerEnabled
 
 # Django
 from django.db.models import Q
 
 import six
+
+
+@pytest.mark.parametrize('params, logger_name, expected', [
+    # skip all records if enabled_flag = False
+    ({'enabled_flag': False}, 'awx.main', False),
+    # skip all records if the host is undefined
+    ({'enabled_flag': True}, 'awx.main', False),
+    # skip all records if underlying logger is used by handlers themselves
+    ({'enabled_flag': True}, 'awx.main.utils.handlers', False),
+    ({'enabled_flag': True, 'enabled_loggers': ['awx']}, 'awx.main', True),
+    ({'enabled_flag': True, 'enabled_loggers': ['abc']}, 'awx.analytics.xyz', False),
+    ({'enabled_flag': True, 'enabled_loggers': ['xyz']}, 'awx.analytics.xyz', True),
+])
+def test_base_logging_handler_skip_log(params, logger_name, expected, dummy_log_record):
+    filter = ExternalLoggerEnabled(**params)
+    dummy_log_record.name = logger_name
+    assert filter.filter(dummy_log_record) is expected, (params, logger_name)
+
+
+@pytest.mark.parametrize('level, expect', [
+    (30, True),  # warning
+    (20, False)  # info
+])
+def test_log_configurable_severity(level, expect, dummy_log_record):
+    dummy_log_record.levelno = level
+    filter = ExternalLoggerEnabled(
+        enabled_flag=True,
+        enabled_loggers=['awx', 'activity_stream', 'job_events', 'system_tracking'],
+        lvl='WARNING'
+    )
+    assert filter.filter(dummy_log_record) is expect
 
 
 Field = namedtuple('Field', 'name')
@@ -39,6 +70,7 @@ class TestSmartFilterQueryFromString():
         ('a__b__c=3.14', Q(**{u"a__b__c": 3.14})),
         ('a__b__c=true', Q(**{u"a__b__c": True})),
         ('a__b__c=false', Q(**{u"a__b__c": False})),
+        ('a__b__c=null', Q(**{u"a__b__c": None})),
         ('ansible_facts__a="true"', Q(**{u"ansible_facts__contains": {u"a": u"true"}})),
         #('"a__b\"__c"="true"', Q(**{u"a__b\"__c": "true"})),
         #('a__b\"__c="true"', Q(**{u"a__b\"__c": "true"})),
@@ -114,7 +146,7 @@ class TestSmartFilterQueryFromString():
         assert six.text_type(q) == six.text_type(q_expected)
 
     @pytest.mark.parametrize("filter_string,q_expected", [
-        ('ansible_facts__a=null', Q(**{u"ansible_facts__contains": {u"a": u"null"}})),
+        ('ansible_facts__a=null', Q(**{u"ansible_facts__contains": {u"a": None}})),
         ('ansible_facts__c="null"', Q(**{u"ansible_facts__contains": {u"c": u"\"null\""}})),
     ])
     def test_contains_query_generated_null(self, mock_get_host_model, filter_string, q_expected):
@@ -130,7 +162,10 @@ class TestSmartFilterQueryFromString():
             Q(**{u"group__name__contains": u"foo"}) | Q(**{u"group__description__contains": u"foo"}))),
         ('search=foo or ansible_facts__a=null',
             Q(Q(**{u"name__contains": u"foo"}) | Q(**{u"description__contains": u"foo"})) |
-            Q(**{u"ansible_facts__contains": {u"a": u"null"}})),
+            Q(**{u"ansible_facts__contains": {u"a": None}})),
+        ('search=foo or ansible_facts__a="null"',
+            Q(Q(**{u"name__contains": u"foo"}) | Q(**{u"description__contains": u"foo"})) |
+            Q(**{u"ansible_facts__contains": {u"a": u"\"null\""}})),
     ])
     def test_search_related_fields(self, mock_get_host_model, filter_string, q_expected):
         q = SmartFilter.query_from_string(filter_string)

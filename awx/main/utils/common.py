@@ -32,6 +32,7 @@ from django.db import DatabaseError
 from django.utils.translation import ugettext_lazy as _
 from django.db.models.fields.related import ForeignObjectRel, ManyToManyField
 from django.db.models.query import QuerySet
+from django.db.models import Q
 
 # Django REST Framework
 from rest_framework.exceptions import ParseError, PermissionDenied
@@ -43,11 +44,11 @@ logger = logging.getLogger('awx.main.utils')
 
 __all__ = ['get_object_or_400', 'get_object_or_403', 'camelcase_to_underscore', 'memoize', 'memoize_delete',
            'get_ansible_version', 'get_ssh_version', 'get_licenser', 'get_awx_version', 'update_scm_url',
-           'get_type_for_model', 'get_model_for_type', 'copy_model_by_class',
-           'copy_m2m_relationships', 'cache_list_capabilities', 'to_python_boolean',
+           'get_type_for_model', 'get_model_for_type', 'copy_model_by_class', 'region_sorting',
+           'copy_m2m_relationships', 'prefetch_page_capabilities', 'to_python_boolean',
            'ignore_inventory_computed_fields', 'ignore_inventory_group_removal',
            '_inventory_updates', 'get_pk_from_dict', 'getattrd', 'NoDefaultProvided',
-           'get_current_apps', 'set_current_apps', 'OutputEventFilter',
+           'get_current_apps', 'set_current_apps', 'OutputEventFilter', 'OutputVerboseFilter',
            'extract_ansible_vars', 'get_search_fields', 'get_system_task_capacity', 'get_cpu_capacity', 'get_mem_capacity',
            'wrap_args_with_proot', 'build_proot_temp_dir', 'check_proot_installed', 'model_to_dict',
            'model_instance_diff', 'timestamp_apiformat', 'parse_yaml_or_json', 'RequireDebugTrueOrTest',
@@ -96,6 +97,14 @@ def to_python_boolean(value, allow_none=False):
         raise ValueError(_(u'Unable to convert "%s" to boolean') % six.text_type(value))
 
 
+def region_sorting(region):
+        if region[1].lower() == 'all':
+            return -1
+        elif region[1].lower().startswith('us'):
+            return 0
+        return region[1]
+
+
 def camelcase_to_underscore(s):
     '''
     Convert CamelCase names to lowercase_with_underscore.
@@ -118,12 +127,16 @@ class IllegalArgumentError(ValueError):
     pass
 
 
+def get_memoize_cache():
+    from django.core.cache import cache
+    return cache
+
+
 def memoize(ttl=60, cache_key=None, track_function=False):
     '''
     Decorator to wrap a function and cache its result.
     '''
-    from django.core.cache import cache
-
+    cache = get_memoize_cache()
 
     def _memoizer(f, *args, **kwargs):
         if cache_key and track_function:
@@ -151,8 +164,7 @@ def memoize(ttl=60, cache_key=None, track_function=False):
 
 
 def memoize_delete(function_name):
-    from django.core.cache import cache
-
+    cache = get_memoize_cache()
     return cache.delete(function_name)
 
 
@@ -335,7 +347,6 @@ def update_scm_url(scm_type, url, username=True, password=True,
 
 
 def get_allowed_fields(obj, serializer_mapping):
-    from django.contrib.auth.models import User
 
     if serializer_mapping is not None and obj.__class__ in serializer_mapping:
         serializer_actual = serializer_mapping[obj.__class__]()
@@ -343,10 +354,14 @@ def get_allowed_fields(obj, serializer_mapping):
     else:
         allowed_fields = [x.name for x in obj._meta.fields]
 
-    if isinstance(obj, User):
-        field_blacklist = ['last_login']
+    ACTIVITY_STREAM_FIELD_EXCLUSIONS = {
+        'user': ['last_login'],
+        'oauth2accesstoken': ['last_used'],
+        'oauth2application': ['client_secret']
+    }
+    field_blacklist = ACTIVITY_STREAM_FIELD_EXCLUSIONS.get(obj._meta.model_name, [])
+    if field_blacklist:
         allowed_fields = [f for f in allowed_fields if f not in field_blacklist]
-
     return allowed_fields
 
 
@@ -371,7 +386,7 @@ def _convert_model_field_for_display(obj, field_name, password_fields=None):
             field_val = json.dumps(field_val, ensure_ascii=False)
         except Exception:
             pass
-    if type(field_val) not in (bool, int, type(None)):
+    if type(field_val) not in (bool, int, type(None), long):
         field_val = smart_str(field_val)
     return field_val
 
@@ -404,10 +419,8 @@ def model_instance_diff(old, new, serializer_mapping=None):
                 _convert_model_field_for_display(old, field, password_fields=old_password_fields),
                 _convert_model_field_for_display(new, field, password_fields=new_password_fields),
             )
-
     if len(diff) == 0:
         diff = None
-
     return diff
 
 
@@ -426,7 +439,6 @@ def model_to_dict(obj, serializer_mapping=None):
         if field.name not in allowed_fields:
             continue
         attr_d[field.name] = _convert_model_field_for_display(obj, field.name, password_fields=password_fields)
-
     return attr_d
 
 
@@ -503,7 +515,6 @@ def get_model_for_type(type):
     '''
     Return model class for a given type name.
     '''
-    from django.db.models import Q
     from django.contrib.contenttypes.models import ContentType
     for ct in ContentType.objects.filter(Q(app_label='main') | Q(app_label='auth', model='user')):
         ct_model = ct.model_class()
@@ -516,30 +527,31 @@ def get_model_for_type(type):
         raise DatabaseError('"{}" is not a valid AWX model.'.format(type))
 
 
-def cache_list_capabilities(page, prefetch_list, model, user):
+def prefetch_page_capabilities(model, page, prefetch_list, user):
     '''
-    Given a `page` list of objects, the specified roles for the specified user
-    are save on each object in the list, using 1 query for each role type
+    Given a `page` list of objects, a nested dictionary of user_capabilities
+    are returned by id, ex.
+    {
+        4: {'edit': True, 'start': True},
+        6: {'edit': False, 'start': False}
+    }
+    Each capability is produced for all items in the page in a single query
 
-    Examples:
-    capabilities_prefetch = ['admin', 'execute']
+    Examples of prefetch language:
+    prefetch_list = ['admin', 'execute']
       --> prefetch the admin (edit) and execute (start) permissions for
           items in list for current user
-    capabilities_prefetch = ['inventory.admin']
+    prefetch_list = ['inventory.admin']
       --> prefetch the related inventory FK permissions for current user,
           and put it into the object's cache
-    capabilities_prefetch = [{'copy': ['inventory.admin', 'project.admin']}]
+    prefetch_list = [{'copy': ['inventory.admin', 'project.admin']}]
       --> prefetch logical combination of admin permission to inventory AND
           project, put into cache dictionary as "copy"
     '''
-    from django.db.models import Q
     page_ids = [obj.id for obj in page]
+    mapping = {}
     for obj in page:
-        obj.capabilities_cache = {}
-
-    skip_models = []
-    if hasattr(model, 'invalid_user_capabilities_prefetch_models'):
-        skip_models = model.invalid_user_capabilities_prefetch_models()
+        mapping[obj.id] = {}
 
     for prefetch_entry in prefetch_list:
 
@@ -583,11 +595,9 @@ def cache_list_capabilities(page, prefetch_list, model, user):
 
         # Save data item-by-item
         for obj in page:
-            if skip_models and obj.__class__.__name__.lower() in skip_models:
-                continue
-            obj.capabilities_cache[display_method] = False
-            if obj.pk in ids_with_role:
-                obj.capabilities_cache[display_method] = True
+            mapping[obj.pk][display_method] = bool(obj.pk in ids_with_role)
+
+    return mapping
 
 
 def validate_vars_type(vars_obj):
@@ -623,8 +633,16 @@ def parse_yaml_or_json(vars_str, silent_failure=True):
             vars_dict = yaml.safe_load(vars_str)
             # Can be None if '---'
             if vars_dict is None:
-                return {}
+                vars_dict = {}
             validate_vars_type(vars_dict)
+            if not silent_failure:
+                # is valid YAML, check that it is compatible with JSON
+                try:
+                    json.dumps(vars_dict)
+                except (ValueError, TypeError, AssertionError) as json_err2:
+                    raise ParseError(_(
+                        'Variables not compatible with JSON standard (error: {json_error})').format(
+                            json_error=str(json_err2)))
         except (yaml.YAMLError, TypeError, AttributeError, AssertionError) as yaml_err:
             if silent_failure:
                 return {}
@@ -639,6 +657,15 @@ def get_cpu_capacity():
     from django.conf import settings
     settings_forkcpu = getattr(settings, 'SYSTEM_TASK_FORKS_CPU', None)
     env_forkcpu = os.getenv('SYSTEM_TASK_FORKS_CPU', None)
+
+    settings_abscpu = getattr(settings, 'SYSTEM_TASK_ABS_CPU', None)
+    env_abscpu = os.getenv('SYSTEM_TASK_ABS_CPU', None)
+
+    if env_abscpu is not None:
+        return 0, int(env_abscpu)
+    elif settings_abscpu is not None:
+        return 0, int(settings_abscpu)
+
     cpu = psutil.cpu_count()
 
     if env_forkcpu:
@@ -654,6 +681,15 @@ def get_mem_capacity():
     from django.conf import settings
     settings_forkmem = getattr(settings, 'SYSTEM_TASK_FORKS_MEM', None)
     env_forkmem = os.getenv('SYSTEM_TASK_FORKS_MEM', None)
+
+    settings_absmem = getattr(settings, 'SYSTEM_TASK_ABS_MEM', None)
+    env_absmem = os.getenv('SYSTEM_TASK_ABS_MEM', None)
+
+    if env_absmem is not None:
+        return 0, int(env_absmem)
+    elif settings_absmem is not None:
+        return 0, int(settings_absmem)
+
     if env_forkmem:
         forkmem = int(env_forkmem)
     elif settings_forkmem:
@@ -982,6 +1018,32 @@ class OutputEventFilter(object):
             self._current_event_data = next_event_data
         else:
             self._current_event_data = None
+
+
+class OutputVerboseFilter(OutputEventFilter):
+    '''
+    File-like object that dispatches stdout data.
+    Does not search for encoded job event data.
+    Use for unified job types that do not encode job event data.
+    '''
+    def write(self, data):
+        self._buffer.write(data)
+
+        # if the current chunk contains a line break
+        if data and '\n' in data:
+            # emit events for all complete lines we know about
+            lines = self._buffer.getvalue().splitlines(True)  # keep ends
+            remainder = None
+            # if last line is not a complete line, then exclude it
+            if '\n' not in lines[-1]:
+                remainder = lines.pop()
+            # emit all complete lines
+            for line in lines:
+                self._emit_event(line)
+            self._buffer = StringIO()
+            # put final partial line back on buffer
+            if remainder:
+                self._buffer.write(remainder)
 
 
 def is_ansible_variable(key):

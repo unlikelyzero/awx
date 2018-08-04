@@ -91,3 +91,19 @@ class TestDeleteViews:
             job.get_absolute_url(), user=system_auditor
         )
         assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_filterable_fields(options, instance, admin_user):
+    r = options(
+        url=instance.get_absolute_url(),
+        user=admin_user
+    )
+
+    filterable_info = r.data['actions']['GET']['created']
+    non_filterable_info = r.data['actions']['GET']['percent_capacity_remaining']
+
+    assert 'filterable' in filterable_info
+    assert filterable_info['filterable'] is True
+
+    assert 'filterable' not in non_filterable_info

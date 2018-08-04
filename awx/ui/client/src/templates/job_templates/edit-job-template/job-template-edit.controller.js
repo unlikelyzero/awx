@@ -16,7 +16,7 @@ export default
         'Rest', 'Alert',  'ProcessErrors', 'GetBasePath', 'md5Setup',
         'ParseTypeChange', 'Wait', 'selectedLabels', 'i18n',
         'Empty', 'Prompt', 'ToJSON', 'GetChoices', 'CallbackHelpInit',
-        'InitiatePlaybookRun' , 'initSurvey', '$state', 'CreateSelect2',
+        'initSurvey', '$state', 'CreateSelect2',
         'ToggleNotification','$q', 'InstanceGroupsService', 'InstanceGroupsData',
         'MultiCredentialService', 'availableLabels', 'projectGetPermissionDenied',
         'inventoryGetPermissionDenied', 'jobTemplateData', 'ParseVariableString', 'ConfigData',
@@ -26,7 +26,7 @@ export default
             ProcessErrors, GetBasePath, md5Setup,
             ParseTypeChange, Wait, selectedLabels, i18n,
             Empty, Prompt, ToJSON, GetChoices, CallbackHelpInit,
-            InitiatePlaybookRun, SurveyControllerInit, $state, CreateSelect2,
+            SurveyControllerInit, $state, CreateSelect2,
             ToggleNotification, $q, InstanceGroupsService, InstanceGroupsData,
             MultiCredentialService, availableLabels, projectGetPermissionDenied,
             inventoryGetPermissionDenied, jobTemplateData, ParseVariableString, ConfigData
@@ -41,7 +41,6 @@ export default
             let defaultUrl = GetBasePath('job_templates'),
                 generator = GenerateForm,
                 form = JobTemplateForm(),
-                base = $location.path().replace(/^\//, '').split('/')[0],
                 master = {},
                 id = $stateParams.job_template_id,
                 callback,
@@ -103,7 +102,7 @@ export default
                                     }
                                 })
                                 .catch( (error) => {
-                                    if (error.status_code === 403) {
+                                    if (error.status === 403) {
                                         /* user doesn't have access to see the project, no big deal. */
                                         $scope.disablePlaybookBecausePermissionDenied = true;
                                     } else {
@@ -252,7 +251,12 @@ export default
                     default_val: dft
                 });
 
-                ParseTypeChange({ scope: $scope, field_id: 'job_template_variables', onChange: callback });
+                ParseTypeChange({
+                    scope: $scope,
+                    field_id: 'extra_vars',
+                    variable: 'extra_vars',
+                    onChange: callback
+                });
 
                 jobTemplateLoadFinished();
             });
@@ -274,9 +278,10 @@ export default
             $scope.removeLoadJobs = $scope.$on('LoadJobs', function() {
                 $scope.job_template_obj = jobTemplateData;
                 $scope.name = jobTemplateData.name;
+                $scope.breadcrumb.job_template_name = jobTemplateData.name;
                 var fld, i;
                 for (fld in form.fields) {
-                    if (fld !== 'variables' && fld !== 'survey' && fld !== 'forks' && jobTemplateData[fld] !== null && jobTemplateData[fld] !== undefined) {
+                    if (fld !== 'extra_vars' && fld !== 'survey' && fld !== 'forks' && jobTemplateData[fld] !== null && jobTemplateData[fld] !== undefined) {
                         if (form.fields[fld].type === 'select') {
                             if ($scope[fld + '_options'] && $scope[fld + '_options'].length > 0) {
                                 for (i = 0; i < $scope[fld + '_options'].length; i++) {
@@ -301,10 +306,10 @@ export default
                             master[fld] = $scope[fld];
                         }
                     }
-                    if (fld === 'variables') {
+                    if (fld === 'extra_vars') {
                         // Parse extra_vars, converting to YAML.
-                        $scope.variables = ParseVariableString(jobTemplateData.extra_vars);
-                        master.variables = $scope.variables;
+                        $scope.extra_vars = ParseVariableString(jobTemplateData.extra_vars);
+                        master.extra_vars = $scope.extra_vars;
                     }
                     if (form.fields[fld].type === 'lookup' && jobTemplateData.summary_fields[form.fields[fld].sourceModel]) {
                         $scope[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
@@ -618,7 +623,7 @@ export default
                             }
                         }
                         else {
-                            if (fld !== 'variables' &&
+                            if (fld !== 'extra_vars' &&
                                 fld !== 'survey' &&
                                 fld !== 'forks') {
                                 data[fld] = $scope[fld];
@@ -655,7 +660,7 @@ export default
                         data.vault_credential = null;
                     }
                     data.extra_vars = ToJSON($scope.parseType,
-                        $scope.variables, true);
+                        $scope.extra_vars, true);
 
                     // We only want to set the survey_enabled flag to
                     // true for this job template if a survey exists
@@ -717,51 +722,6 @@ export default
 
             $scope.formCancel = function () {
                 $state.go('templates');
-            };
-
-            // Related set: Add button
-            $scope.add = function (set) {
-                $rootScope.flashMessage = null;
-                $location.path('/' + base + '/' + $stateParams.job_template_id + '/' + set);
-            };
-
-            // Related set: Edit button
-            $scope.edit = function (set, id) {
-                $rootScope.flashMessage = null;
-                $location.path('/' + set + '/' + id);
-            };
-
-            // Launch a job using the selected template
-            $scope.launch = function() {
-
-                if ($scope.removePromptForSurvey) {
-                    $scope.removePromptForSurvey();
-                }
-                $scope.removePromptForSurvey = $scope.$on('PromptForSurvey', function() {
-                    var action = function () {
-                            // $scope.$emit("GatherFormFields");
-                            Wait('start');
-                            $('#prompt-modal').modal('hide');
-                            $scope.addSurvey();
-
-                        };
-                    Prompt({
-                        hdr: 'Incomplete Survey',
-                        body: '<div class="Prompt-bodyQuery">Do you want to create a survey before proceeding?</div>',
-                        action: action
-                    });
-                });
-                if($scope.survey_enabled === true && $scope.survey_exists!==true){
-                    $scope.$emit("PromptForSurvey");
-                }
-                else {
-
-                    InitiatePlaybookRun({
-                        scope: $scope,
-                        id: id,
-                        job_type: 'job_template'
-                    });
-                }
             };
         }
     ];

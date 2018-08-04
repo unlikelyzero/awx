@@ -50,8 +50,8 @@ export default ['i18n', function(i18n){
                 mode: 'all', // One of: edit, select, all
                 ngClick: 'addNotification()',
                 awToolTip: i18n._('Create a new notification template'),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: 'canAdd'
             }
         },
@@ -59,15 +59,7 @@ export default ['i18n', function(i18n){
         fieldActions: {
 
             columnClass: 'col-md-2 col-sm-3 col-xs-3',
-            test: {
-                ngClick: "testNotification(notification_template.id)",
-                icon: 'fa-bell-o',
-                label: i18n._('Edit'),
-                "class": 'btn-sm',
-                awToolTip: i18n._('Test notification'),
-                dataPlacement: 'top',
-                ngShow: 'notification_template.summary_fields.user_capabilities.edit'
-            },
+
             edit: {
                 ngClick: "editNotification(notification_template.id)",
                 icon: 'fa-edit',
@@ -77,13 +69,22 @@ export default ['i18n', function(i18n){
                 dataPlacement: 'top',
                 ngShow: 'notification_template.summary_fields.user_capabilities.edit'
             },
+            test: {
+                ngClick: "testNotification(notification_template.id)",
+                icon: 'fa-bell-o',
+                label: i18n._('Edit'),
+                "class": 'btn-sm',
+                awToolTip: i18n._('Test notification'),
+                dataPlacement: 'top',
+                ngShow: 'notification_template.summary_fields.user_capabilities.edit'
+            },
             copy: {
                 label: i18n._('Copy'),
                 ngClick: 'copyNotification(notification_template)',
                 "class": 'btn-danger btn-xs',
                 awToolTip: i18n._('Copy notification'),
                 dataPlacement: 'top',
-                ngShow: 'notification_template.summary_fields.user_capabilities.edit'
+                ngShow: 'notification_template.summary_fields.user_capabilities.copy'
             },
             view: {
                 ngClick: "editNotification(notification_template.id)",

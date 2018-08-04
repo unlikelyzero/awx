@@ -132,7 +132,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                     });
 
                     $scope.scmBranchLabel = ($scope.scm_type.value === 'svn') ? 'Revision #' : 'SCM Branch';
-                    $scope.scm_update_tooltip = i18n._("Start an SCM update");
+                    $scope.scm_update_tooltip = i18n._("Get latest SCM revision");
                     $scope.scm_type_class = "";
                     if (data.status === 'running' || data.status === 'updating') {
                         $scope.scm_update_tooltip = i18n._("SCM update currently running");
@@ -143,7 +143,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
                         $scope.scm_type_class = "btn-disabled";
                     }
 
-                    OrgAdminLookup.checkForAdminAccess({organization: data.organization})
+                    OrgAdminLookup.checkForRoleLevelAdminAccess(data.organization, 'project_admin_role')
                     .then(function(canEditOrg){
                         $scope.canEditOrg = canEditOrg;
                     });
@@ -156,6 +156,7 @@ export default ['$scope', '$rootScope', '$stateParams', 'ProjectsForm', 'Rest',
 
                     $scope.project_obj = data;
                     $scope.name = data.name;
+                    $scope.breadcrumb.project_name = data.name;
                     $scope.$emit('projectLoaded');
                     Wait('stop');
                 })

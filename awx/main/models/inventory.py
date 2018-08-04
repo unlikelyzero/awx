@@ -33,12 +33,16 @@ from awx.main.managers import HostManager
 from awx.main.models.base import * # noqa
 from awx.main.models.events import InventoryUpdateEvent
 from awx.main.models.unified_jobs import * # noqa
-from awx.main.models.mixins import ResourceMixin, TaskManagerInventoryUpdateMixin
+from awx.main.models.mixins import (
+    ResourceMixin,
+    TaskManagerInventoryUpdateMixin,
+    RelatedJobsMixin,
+)
 from awx.main.models.notifications import (
     NotificationTemplate,
     JobNotificationMixin,
 )
-from awx.main.utils import _inventory_updates, get_ansible_version
+from awx.main.utils import _inventory_updates, get_ansible_version, region_sorting
 
 
 __all__ = ['Inventory', 'Host', 'Group', 'InventorySource', 'InventoryUpdate',
@@ -47,7 +51,7 @@ __all__ = ['Inventory', 'Host', 'Group', 'InventorySource', 'InventoryUpdate',
 logger = logging.getLogger('awx.main.models.inventory')
 
 
-class Inventory(CommonModelNameNotUnique, ResourceMixin):
+class Inventory(CommonModelNameNotUnique, ResourceMixin, RelatedJobsMixin):
     '''
     an inventory source contains lists and hosts.
     '''
@@ -229,7 +233,7 @@ class Inventory(CommonModelNameNotUnique, ResourceMixin):
                 return {}
             else:
                 all_group = data.setdefault('all', dict())
-                smart_hosts_qs = self.hosts.all()
+                smart_hosts_qs = self.hosts.filter(**hosts_q).all()
                 smart_hosts = list(smart_hosts_qs.values_list('name', flat=True))
                 all_group['hosts'] = smart_hosts
         else:
@@ -489,6 +493,16 @@ class Inventory(CommonModelNameNotUnique, ResourceMixin):
         self._update_host_smart_inventory_memeberships()
         super(Inventory, self).delete(*args, **kwargs)
 
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return UnifiedJob.objects.non_polymorphic().filter(
+            Q(Job___inventory=self) |
+            Q(InventoryUpdate___inventory_source__inventory=self) |
+            Q(AdHocCommand___inventory=self)
+        )
+
 
 class SmartInventoryMembership(BaseModel):
     '''
@@ -503,7 +517,7 @@ class SmartInventoryMembership(BaseModel):
     host = models.ForeignKey('Host', related_name='+', on_delete=models.CASCADE)
 
 
-class Host(CommonModelNameNotUnique):
+class Host(CommonModelNameNotUnique, RelatedJobsMixin):
     '''
     A managed node
     '''
@@ -595,9 +609,6 @@ class Host(CommonModelNameNotUnique):
     )
 
     objects = HostManager()
-
-    def __unicode__(self):
-        return self.name
 
     def get_absolute_url(self, request=None):
         return reverse('api:host_detail', kwargs={'pk': self.pk}, request=request)
@@ -692,8 +703,14 @@ class Host(CommonModelNameNotUnique):
         self._update_host_smart_inventory_memeberships()
         super(Host, self).delete(*args, **kwargs)
 
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return self.inventory._get_related_jobs()
 
-class Group(CommonModelNameNotUnique):
+
+class Group(CommonModelNameNotUnique, RelatedJobsMixin):
     '''
     A group containing managed hosts.  A group or host may belong to multiple
     groups.
@@ -767,9 +784,6 @@ class Group(CommonModelNameNotUnique):
         editable=False,
         help_text=_('Inventory source(s) that created or modified this group.'),
     )
-
-    def __unicode__(self):
-        return self.name
 
     def get_absolute_url(self, request=None):
         return reverse('api:group_detail', kwargs={'pk': self.pk}, request=request)
@@ -947,6 +961,15 @@ class Group(CommonModelNameNotUnique):
     def ad_hoc_commands(self):
         from awx.main.models.ad_hoc_commands import AdHocCommand
         return AdHocCommand.objects.filter(hosts__in=self.all_hosts)
+
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return UnifiedJob.objects.non_polymorphic().filter(
+            Q(Job___inventory=self.inventory) |
+            Q(InventoryUpdate___inventory_source__groups=self)
+        )
 
 
 class InventorySourceOptions(BaseModel):
@@ -1142,7 +1165,7 @@ class InventorySourceOptions(BaseModel):
                     label_parts.append(part)
                 label = ' '.join(label_parts)
             regions.append((region.name, label))
-        return regions
+        return sorted(regions, key=region_sorting)
 
     @classmethod
     def get_ec2_group_by_choices(cls):
@@ -1152,6 +1175,7 @@ class InventorySourceOptions(BaseModel):
             ('aws_account', _('Account')),
             ('instance_id', _('Instance ID')),
             ('instance_state', _('Instance State')),
+            ('platform', _('Platform')),
             ('instance_type', _('Instance Type')),
             ('key_pair', _('Key Name')),
             ('region', _('Region')),
@@ -1170,7 +1194,7 @@ class InventorySourceOptions(BaseModel):
         # authenticating first.  Therefore, use a list from settings.
         regions = list(getattr(settings, 'GCE_REGION_CHOICES', []))
         regions.insert(0, ('all', 'All'))
-        return regions
+        return sorted(regions, key=region_sorting)
 
     @classmethod
     def get_azure_rm_region_choices(self):
@@ -1183,7 +1207,7 @@ class InventorySourceOptions(BaseModel):
         # settings.
         regions = list(getattr(settings, 'AZURE_RM_REGION_CHOICES', []))
         regions.insert(0, ('all', 'All'))
-        return regions
+        return sorted(regions, key=region_sorting)
 
     @classmethod
     def get_vmware_region_choices(self):
@@ -1238,6 +1262,14 @@ class InventorySourceOptions(BaseModel):
                 'Credentials of type machine, source control, insights and vault are '
                 'disallowed for custom inventory sources.'
             )
+        return None
+
+    def get_inventory_plugin_name(self):
+        if self.source in CLOUD_PROVIDERS or self.source == 'custom':
+            # TODO: today, all vendored sources are scripts
+            # in future release inventory plugins will replace these
+            return 'script'
+        # in other cases we do not specify which plugin to use
         return None
 
     def get_deprecated_credential(self, kind):
@@ -1333,7 +1365,7 @@ class InventorySourceOptions(BaseModel):
             return ''
 
 
-class InventorySource(UnifiedJobTemplate, InventorySourceOptions):
+class InventorySource(UnifiedJobTemplate, InventorySourceOptions, RelatedJobsMixin):
 
     SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name', 'inventory')]
 
@@ -1552,6 +1584,12 @@ class InventorySource(UnifiedJobTemplate, InventorySourceOptions):
             raise ValidationError(_("Cannot set source_path if not SCM type."))
         return self.source_path
 
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return InventoryUpdate.objects.filter(inventory_source=self)
+
 
 class InventoryUpdate(UnifiedJob, InventorySourceOptions, JobNotificationMixin, TaskManagerInventoryUpdateMixin):
     '''
@@ -1608,7 +1646,7 @@ class InventoryUpdate(UnifiedJob, InventorySourceOptions, JobNotificationMixin, 
         return reverse('api:inventory_update_detail', kwargs={'pk': self.pk}, request=request)
 
     def get_ui_url(self):
-        return urljoin(settings.TOWER_URL_BASE, "/#/inventory_sync/{}".format(self.pk))
+        return urljoin(settings.TOWER_URL_BASE, "/#/jobs/inventory/{}".format(self.pk))
 
     def get_actual_source_path(self):
         '''Alias to source_path that combines with project path for for SCM file based sources'''
@@ -1659,6 +1697,8 @@ class InventoryUpdate(UnifiedJob, InventorySourceOptions, JobNotificationMixin, 
             organization_groups = []
         if self.inventory_source.inventory is not None:
             inventory_groups = [x for x in self.inventory_source.inventory.instance_groups.all()]
+        else:
+            inventory_groups = []
         selected_groups = inventory_groups + organization_groups
         if not selected_groups:
             return self.global_instance_groups

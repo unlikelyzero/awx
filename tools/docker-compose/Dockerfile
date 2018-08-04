@@ -9,7 +9,6 @@ requirements/requirements_ansible_git.txt \
 requirements/requirements_dev.txt \
 requirements/requirements_ansible_uninstall.txt \
 requirements/requirements_tower_uninstall.txt \
-requirements/requirements_dev_uninstall.txt \
 /tmp/requirements/
 RUN yum -y update && yum -y install curl epel-release && yum -y install https://centos7.iuscommunity.org/ius-release.rpm
 RUN curl --silent --location https://rpm.nodesource.com/setup_6.x | bash -
@@ -30,7 +29,7 @@ RUN ln -s /awx_devel/tools/docker-compose/bootstrap_development.sh /bootstrap_de
 RUN openssl req -nodes -newkey rsa:2048 -keyout /etc/nginx/nginx.key -out /etc/nginx/nginx.csr -subj "/C=US/ST=North Carolina/L=Durham/O=Ansible/OU=AWX Development/CN=awx.localhost"
 RUN openssl x509 -req -days 365 -in /etc/nginx/nginx.csr -signkey /etc/nginx/nginx.key -out /etc/nginx/nginx.crt
 WORKDIR /tmp
-RUN SWIG_FEATURES="-cpperraswarn -includeall -D__`uname -m`__ -I/usr/include/openssl" VENV_BASE="/venv" make requirements_dev
+RUN CFLAGS="-DXMLSEC_NO_SIZE_T" SWIG_FEATURES="-cpperraswarn -includeall -D__`uname -m`__ -I/usr/include/openssl" VENV_BASE="/venv" make requirements_dev
 RUN localedef -c -i en_US -f UTF-8 en_US.UTF-8
 ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en

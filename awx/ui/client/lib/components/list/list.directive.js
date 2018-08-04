@@ -1,6 +1,10 @@
 const templateUrl = require('~components/list/list.partial.html');
 
-// TODO: figure out emptyListReason scope property
+function atListLink (scope, element, attrs) {
+    if (!attrs.results) {
+        throw new Error('at-list directive requires results attr to set up the empty list properly');
+    }
+}
 
 function AtListController (strings) {
     this.strings = strings;
@@ -16,7 +20,9 @@ function atList () {
         templateUrl,
         scope: {
             results: '=',
+            emptyListReason: '@'
         },
+        link: atListLink,
         controller: AtListController,
         controllerAs: 'vm',
     };

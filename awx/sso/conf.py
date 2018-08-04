@@ -295,6 +295,27 @@ def _register_ldap(append=None):
         category_slug='ldap',
         feature_required='ldap',
         default='MemberDNGroupType',
+        depends_on=['AUTH_LDAP{}_GROUP_TYPE_PARAMS'.format(append_str)],
+    )
+
+    register(
+        'AUTH_LDAP{}_GROUP_TYPE_PARAMS'.format(append_str),
+        field_class=fields.LDAPGroupTypeParamsField,
+        label=_('LDAP Group Type Parameters'),
+        help_text=_('Key value parameters to send the chosen group type init method.'),
+        category=_('LDAP'),
+        category_slug='ldap',
+        default=collections.OrderedDict([
+            ('member_attr', 'member'),
+            ('name_attr', 'cn'),
+        ]),
+        placeholder=collections.OrderedDict([
+            ('ldap_group_user_attr', 'legacyuid'),
+            ('member_attr', 'member'),
+            ('name_attr', 'cn'),
+        ]),
+        feature_required='ldap',
+        depends_on=['AUTH_LDAP{}_GROUP_TYPE'.format(append_str)],
     )
 
     register(
@@ -1175,7 +1196,9 @@ register(
     category_slug='saml',
     placeholder=collections.OrderedDict([
         ('saml_attr', 'organization'),
+        ('saml_admin_attr', 'organization_admin'),
         ('remove', True),
+        ('remove_admins', True),
     ]),
     feature_required='enterprise_auth',
 )
@@ -1190,7 +1213,7 @@ register(
     category=_('SAML'),
     category_slug='saml',
     placeholder=collections.OrderedDict([
-        ('saml_attr', 'organization'),
+        ('saml_attr', 'team'),
         ('remove', True),
         ('team_org_map', [
             collections.OrderedDict([

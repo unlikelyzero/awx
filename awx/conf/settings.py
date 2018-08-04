@@ -5,6 +5,8 @@ import logging
 import sys
 import threading
 import time
+import StringIO
+import traceback
 
 import six
 
@@ -62,11 +64,19 @@ __all__ = ['SettingsWrapper', 'get_settings_to_cache', 'SETTING_CACHE_NOTSET']
 def _log_database_error():
     try:
         yield
-    except (ProgrammingError, OperationalError) as e:
-        if get_tower_migration_version() < '310':
+    except (ProgrammingError, OperationalError):
+        if 'migrate' in sys.argv and get_tower_migration_version() < '310':
             logger.info('Using default settings until version 3.1 migration.')
         else:
-            logger.warning('Database settings are not available, using defaults (%s)', e, exc_info=True)
+            # Somewhat ugly - craming the full stack trace into the log message
+            # the available exc_info does not give information about the real caller
+            # TODO: replace in favor of stack_info kwarg in python 3
+            sio = StringIO.StringIO()
+            traceback.print_stack(file=sio)
+            sinfo = sio.getvalue()
+            sio.close()
+            sinfo = sinfo.strip('\n')
+            logger.warning('Database settings are not available, using defaults, logged from:\n{}'.format(sinfo))
     finally:
         pass
 
@@ -305,7 +315,7 @@ class SettingsWrapper(UserSettingsHolder):
         settings_to_cache['_awx_conf_preload_expires'] = self._awx_conf_preload_expires
         self.cache.set_many(settings_to_cache, timeout=SETTING_CACHE_TIMEOUT)
 
-    def _get_local(self, name):
+    def _get_local(self, name, validate=True):
         self._preload_cache()
         cache_key = Setting.get_cache_key(name)
         try:
@@ -368,7 +378,10 @@ class SettingsWrapper(UserSettingsHolder):
                     field.run_validators(internal_value)
                     return internal_value
                 else:
-                    return field.run_validation(value)
+                    if validate:
+                        return field.run_validation(value)
+                    else:
+                        return value
             except Exception:
                 logger.warning(
                     'The current value "%r" for setting "%s" is invalid.',

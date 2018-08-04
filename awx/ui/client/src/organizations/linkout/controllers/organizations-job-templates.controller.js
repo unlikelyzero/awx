@@ -6,11 +6,11 @@
 
 export default ['$scope', '$rootScope',
     '$stateParams', 'Rest', 'ProcessErrors',
-    'GetBasePath', 'InitiatePlaybookRun', 'Wait', 'TemplateCopyService',
+    'GetBasePath', 'Wait',
     '$state', 'OrgJobTemplateList', 'OrgJobTemplateDataset', 'QuerySet',
     function($scope, $rootScope,
         $stateParams, Rest, ProcessErrors,
-        GetBasePath, InitiatePlaybookRun, Wait, TemplateCopyService,
+        GetBasePath, Wait,
         $state, OrgJobTemplateList, Dataset, qs) {
 
         var list = OrgJobTemplateList,
@@ -73,32 +73,8 @@ export default ['$scope', '$rootScope',
             $state.go('templates.editJobTemplate', { job_template_id: id });
         };
 
-        $scope.submitJob = function(id) {
-            InitiatePlaybookRun({ scope: $scope, id: id, job_type: 'job_template' });
-        };
-
         $scope.scheduleJob = function(id) {
-            $state.go('jobTemplateSchedules', { id: id });
+            $state.go('templates.editJobTemplate.schedules', { id: id });
         };
-
-        $scope.copyTemplate = function(id) {
-            Wait('start');
- 			TemplateCopyService.get(id)
- 			.then((data) => {
-                    TemplateCopyService.set(data.results)
-                .then((results) => {
-                    Wait('stop');
-                    if(results.type && results.type === 'job_template') {
-                        $state.go('templates.editJobTemplate', {job_template_id: results.id}, {reload: true});
-                    }
-                });
- 			})
-  			.catch(({data, status}) => {
-                ProcessErrors($rootScope, data, status, null, {hdr: 'Error!',
-                msg: 'Call failed. Return status: '+ status});
-            });
-
-        };
-
     }
 ];

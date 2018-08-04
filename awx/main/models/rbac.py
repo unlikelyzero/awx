@@ -153,6 +153,12 @@ class Role(models.Model):
     object_id = models.PositiveIntegerField(null=True, default=None)
     content_object = GenericForeignKey('content_type', 'object_id')
 
+    def __unicode__(self):
+        if 'role_field' in self.__dict__:
+            return u'%s-%s' % (self.name, self.pk)
+        else:
+            return u'%s-%s' % (self._meta.verbose_name, self.pk)
+
     def save(self, *args, **kwargs):
         super(Role, self).save(*args, **kwargs)
         self.rebuild_role_ancestor_list([self.id], [])
@@ -166,7 +172,7 @@ class Role(models.Model):
         elif accessor.__class__.__name__ == 'Team':
             return self.ancestors.filter(pk=accessor.member_role.id).exists()
         elif type(accessor) == Role:
-            return self.ancestors.filter(pk=accessor).exists()
+            return self.ancestors.filter(pk=accessor.pk).exists()
         else:
             accessor_type = ContentType.objects.get_for_model(accessor)
             roles = Role.objects.filter(content_type__pk=accessor_type.id,
@@ -478,13 +484,25 @@ def role_summary_fields_generator(content_object, role_field):
     global role_names
     summary = {}
     description = role_descriptions[role_field]
+
+    model_name = None
     content_type = ContentType.objects.get_for_model(content_object)
-    if '%s' in description and content_type:
+    if content_type:
         model = content_object.__class__
         model_name = re.sub(r'([a-z])([A-Z])', r'\1 \2', model.__name__).lower()
-        description = description % model_name
 
-    summary['description'] = description
+    value = description
+    if type(description) == dict:
+        value = None
+        if model_name:
+            value = description.get(model_name)
+        if value is None:
+            value = description.get('default')
+
+    if '%s' in value and model_name:
+        value = value % model_name
+
+    summary['description'] = value
     summary['name'] = role_names[role_field]
     summary['id'] = getattr(content_object, '{}_id'.format(role_field))
     return summary

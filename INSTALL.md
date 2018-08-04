@@ -23,6 +23,7 @@ This document provides a guide for installing AWX.
 - [Kubernetes](#kubernetes)
   - [Prerequisites](#prerequisites-2)
   - [Pre-build steps](#pre-build-steps-1)
+  - [Configuring Helm](#configuring-helm)
   - [Start the build](#start-the-build-1)
   - [Accessing AWX](#accessing-awx-1)
   - [SSL Termination](#ssl-termination)
@@ -61,6 +62,8 @@ Before you can run a deployment, you'll need the following installed in your loc
 - [docker-py](https://github.com/docker/docker-py) Python module
 - [GNU Make](https://www.gnu.org/software/make/)
 - [Git](https://git-scm.com/) Requires Version 1.8.4+
+- [Node 6.x LTS version](https://nodejs.org/en/download/)
+- [NPM 3.x LTS](https://docs.npmjs.com/)
 
 ### System Requirements
 
@@ -70,6 +73,7 @@ The system that runs the AWX service will need to satisfy the following requirem
 - At least 2 cpu cores
 - At least 20GB of space
 - Running Docker, Openshift, or Kubernetes
+- If you choose to use an external PostgreSQL database, please note that the minimum version is 9.4.
 
 ### AWX Tunables
 
@@ -115,20 +119,14 @@ To complete a deployment to OpenShift, you will obviously need access to an Open
 
 You will also need to have the `oc` command in your PATH. The `install.yml` playbook will call out to `oc` when logging into, and creating objects on the cluster.
 
-#### Deploying to Minishift
+The default resource requests per-pod requires:
 
-Install Minishift by following the [installation guide](https://docs.openshift.org/latest/minishift/getting-started/installing.html).
+> Memory: 6GB
+> CPU: 3 cores
 
-The Minishift VM contains a Docker daemon, which you can use to build the AWX images. This is generally the approach you should take, and we recommend doing so. To use this instance, run the following command to setup your environment:
+This can be tuned by overriding the variables found in [/installer/openshift/defaults/main.yml](/installer/openshift/defaults/main.yml). Special care should be taken when doing this as undersized instances will experience crashes and resource exhaustion.
 
-```bash
-# Set DOCKER environment variable to point to the Minishift VM
-$ eval $(minishift docker-env)
-```
-
-**Note**
-
-> If you choose to not use the Docker instance running inside the VM, and build the images externally, you will have to enable the OpenShift cluster to access the images. This involves pushing the images to an external Docker registry, and granting the cluster access to it, or exposing the internal registry, and pushing the images into it.
+For more detail on how resource requests are formed see: [https://docs.openshift.com/container-platform/latest/dev_guide/compute_resources.html#dev-compute-resources](https://docs.openshift.com/container-platform/latest/dev_guide/compute_resources.html#dev-compute-resources)
 
 ### Pre-build steps
 
@@ -138,13 +136,22 @@ Before starting the build process, review the [inventory](./installer/inventory)
 
 > IP address or hostname of the OpenShift cluster. If you're using Minishift, this will be the value returned by `minishift ip`.
 
-*awx_openshift_project*
+
+*openshift_skip_tls_verify*
+
+> Boolean. Set to True if using self-signed certs.
+
+*openshift_project*
 
 > Name of the OpenShift project that will be created, and used as the namespace for the AWX app. Defaults to *awx*.
 
 *openshift_user*
 
 > Username of the OpenShift user that will create the project, and deploy the application. Defaults to *developer*.
+
+*openshift_pg_emptydir*
+
+> Boolean. Set to True to use an emptyDir volume when deploying the PostgreSQL pod. Note: This should only be used for demo and testing purposes.
 
 *docker_registry*
 
@@ -158,11 +165,30 @@ Before starting the build process, review the [inventory](./installer/inventory)
 
 > Username of the user that will push images to the registry. Will generally match the *openshift_user* value. Defaults to *developer*. This is not needed if you are using official hosted images.
 
+#### Deploying to Minishift
+
+Install Minishift by following the [installation guide](https://docs.openshift.org/latest/minishift/getting-started/installing.html).
+
+The recommended minimum resources for your Minishift VM:
+
+```bash
+$ minishift start --cpus=4 --memory=8GB
+```
+
+The Minishift VM contains a Docker daemon, which you can use to build the AWX images. This is generally the approach you should take, and we recommend doing so. To use this instance, run the following command to setup your environment:
+
+```bash
+# Set DOCKER environment variable to point to the Minishift VM
+$ eval $(minishift docker-env)
+```
+
+**Note**
+
+> If you choose to not use the Docker instance running inside the VM, and build the images externally, you will have to enable the OpenShift cluster to access the images. This involves pushing the images to an external Docker registry, and granting the cluster access to it, or exposing the internal registry, and pushing the images into it.
+
 #### PostgreSQL
 
-AWX requires access to a PostgreSQL database, and by default, one will be created and deployed in a pod. The database is configured for persistence and will create a persistent volume claim named `postgresql`. By default it will claim 5GB from the available persistent volume pool. This can be tuned by setting a variable in the inventory file or on the command line during the `ansible-playbook` run.
-
-    ansible-playbook ... -e pg_volume_capacity=n
+By default, AWX will deploy a PostgreSQL pod inside of your cluster. You will need to create a [Persistent Volume Claim](https://docs.openshift.org/latest/dev_guide/persistent_volumes.html) which is named `postgresql` by default, and can be overridden by setting the `openshift_pg_pvc_name` variable. For testing and demo purposes, you may set `openshift_pg_emptydir=yes`.
 
 If you wish to use an external database, in the inventory file, set the value of `pg_hostname`, and update `pg_username`, `pg_password`, `pg_database`, and `pg_port` with the connection information. When setting `pg_hostname` the installer will assume you have configured the database in that location and will not launch the postgresql pod.
 
@@ -287,6 +313,15 @@ A Kubernetes deployment will require you to have access to a Kubernetes cluster 
 
 The installation program will reference `kubectl` directly. `helm` is only necessary if you are letting the installer configure PostgreSQL for you.
 
+The default resource requests per-pod requires:
+
+> Memory: 6GB
+> CPU: 3 cores
+
+This can be tuned by overriding the variables found in [/installer/roles/kubernetes/defaults/main.yml](/installer/roles/kubernetes/defaults/main.yml). Special care should be taken when doing this as undersized instances will experience crashes and resource exhaustion.
+
+For more detail on how resource requests are formed see: [https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/)
+
 ### Pre-build steps
 
 Before starting the build process, review the [inventory](./installer/inventory) file, and uncomment and provide values for the following variables found in the `[all:vars]` section uncommenting when necessary. Make sure the openshift and standalone docker sections are commented out:
@@ -295,13 +330,19 @@ Before starting the build process, review the [inventory](./installer/inventory)
 
 > Prior to running the installer, make sure you've configured the context for the cluster you'll be installing to. This is how the installer knows which cluster to connect to and what authentication to use
 
-*awx_kubernetes_namespace*
+*kubernetes_namespace*
 
 > Name of the Kubernetes namespace where the AWX resources will be installed. This will be created if it doesn't exist
 
 *docker_registry_*
 
 > These settings should be used if building your own base images. You'll need access to an external registry and are responsible for making sure your kube cluster can talk to it and use it. If these are undefined and the dockerhub_ configuration settings are uncommented then the images will be pulled from dockerhub instead
+
+### Configuring Helm
+
+If you want the AWX installer to manage creating the database pod (rather than installing and configuring postgres on your own). Then you will need to have a working `helm` installation, you can find details here: [https://docs.helm.sh/using_helm/#quickstart-guide](https://docs.helm.sh/using_helm/#quickstart-guide).
+
+Newer Kubernetes clusters with RBAC enabled will need to make sure a service account is created, make sure to follow the instructions here [https://docs.helm.sh/using_helm/#role-based-access-control](https://docs.helm.sh/using_helm/#role-based-access-control)
 
 ### Start the build
 
@@ -363,7 +404,7 @@ If you're installing using Docker Compose, you'll need [Docker Compose](https://
 
 #### Deploying to a remote host
 
-By default, the delivered [installer/inventory](./installer/inventory) file will deploy AWX to the local host. It is possible; however, to deploy to a remote host. The [installer/install.yml](./installer/install.yml) playbook can be used to build images on the local host, and ship the built images to, and run deployment tasks on, a remote host. To do this, modify the [installer/inventory](./installer/inventory) file, by commenting out `localhost`, and adding the remote host.
+By default, the delivered [installer/inventory](./installer/inventory) file will deploy AWX to the local host. It is possible, however, to deploy to a remote host. The [installer/install.yml](./installer/install.yml) playbook can be used to build images on the local host, and ship the built images to, and run deployment tasks on, a remote host. To do this, modify the [installer/inventory](./installer/inventory) file, by commenting out `localhost`, and adding the remote host.
 
 For example, suppose you wish to build images locally on your CI/CD host, and deploy them to a remote host named *awx-server*. To do this, add *awx-server* to the [installer/inventory](./installer/inventory) file, and comment out or remove `localhost`, as demonstrated by the following:
 

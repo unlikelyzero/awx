@@ -4,12 +4,9 @@
 import os
 import re  # noqa
 import sys
-import ldap
 import djcelery
+import six
 from datetime import timedelta
-
-from kombu import Queue, Exchange
-from kombu.common import Broadcast
 
 # global settings
 from django.conf import global_settings
@@ -40,6 +37,13 @@ def is_testing(argv=None):
 def IS_TESTING(argv=None):
     return is_testing(argv)
 
+
+if "pytest" in sys.modules:
+    import mock
+    with mock.patch('__main__.__builtins__.dir', return_value=[]):
+        import ldap
+else:
+    import ldap
 
 DEBUG = True
 SQL_DEBUG = DEBUG
@@ -169,6 +173,10 @@ STDOUT_MAX_BYTES_DISPLAY = 1048576
 # on how many events to display before truncating/hiding
 MAX_UI_JOB_EVENTS = 4000
 
+# Returned in index.html, tells the UI if it should make requests
+# to update job data in response to status changes websocket events
+UI_LIVE_UPDATES_ENABLED = True
+
 # The maximum size of the ansible callback event's res data structure
 # beyond this limit and the value will be removed
 MAX_EVENT_RES_DATA = 700000
@@ -239,6 +247,7 @@ TEMPLATES = [
 ]
 
 MIDDLEWARE_CLASSES = (  # NOQA
+    'awx.main.middleware.MigrationRanCheckMiddleware',
     'awx.main.middleware.TimingMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
@@ -278,6 +287,7 @@ INSTALLED_APPS = (
     'awx.ui',
     'awx.sso',
     'solo',
+    'awx.network_ui'
 )
 
 INTERNAL_IPS = ('127.0.0.1',)
@@ -338,9 +348,9 @@ AUTHENTICATION_BACKENDS = (
 # Django OAuth Toolkit settings
 OAUTH2_PROVIDER_APPLICATION_MODEL = 'main.OAuth2Application'
 OAUTH2_PROVIDER_ACCESS_TOKEN_MODEL = 'main.OAuth2AccessToken'
-OAUTH2_PROVIDER_REFRESH_TOKEN_MODEL = 'main.OAuth2RefreshToken'
 
-OAUTH2_PROVIDER = {}
+OAUTH2_PROVIDER = {'ACCESS_TOKEN_EXPIRE_SECONDS': 31536000000,
+                   'AUTHORIZATION_CODE_EXPIRE_SECONDS': 600}
 
 # LDAP server (default to None to skip using LDAP authentication).
 # Note: This setting may be overridden by database settings.
@@ -367,15 +377,6 @@ TACACSPLUS_PORT = 49
 TACACSPLUS_SECRET = ''
 TACACSPLUS_SESSION_TIMEOUT = 5
 TACACSPLUS_AUTH_PROTOCOL = 'ascii'
-
-# Seconds before auth tokens expire.
-# Note: This setting may be overridden by database settings.
-AUTH_TOKEN_EXPIRATION = 1800
-
-# Maximum number of per-user valid, concurrent tokens.
-# -1 is unlimited
-# Note: This setting may be overridden by database settings.
-AUTH_TOKEN_PER_USER = -1
 
 # Enable / Disable HTTP Basic Authentication used in the API browser
 # Note: Session limits are not enforced when using HTTP Basic Authentication.
@@ -458,7 +459,10 @@ djcelery.setup_loader()
 BROKER_POOL_LIMIT = None
 BROKER_URL = 'amqp://guest:guest@localhost:5672//'
 CELERY_EVENT_QUEUE_TTL = 5
-CELERY_DEFAULT_QUEUE = 'tower'
+CELERY_DEFAULT_QUEUE = 'awx_private_queue'
+CELERY_DEFAULT_EXCHANGE = 'awx_private_queue'
+CELERY_DEFAULT_ROUTING_KEY = 'awx_private_queue'
+CELERY_DEFAULT_EXCHANGE_TYPE = 'direct'
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
@@ -466,13 +470,21 @@ CELERY_TRACK_STARTED = True
 CELERYD_TASK_TIME_LIMIT = None
 CELERYD_TASK_SOFT_TIME_LIMIT = None
 CELERYD_POOL_RESTARTS = True
+CELERYD_AUTOSCALER = 'awx.main.utils.autoscale:DynamicAutoScaler'
 CELERY_RESULT_BACKEND = 'djcelery.backends.database:DatabaseBackend'
 CELERY_IMPORTS = ('awx.main.scheduler.tasks',)
-CELERY_QUEUES = (
-    Queue('tower', Exchange('tower'), routing_key='tower'),
-    Broadcast('tower_broadcast_all')
-)
-CELERY_ROUTES = {}
+CELERY_QUEUES = ()
+CELERY_ROUTES = ('awx.main.utils.ha.AWXCeleryRouter',)
+
+
+def log_celery_failure(*args):
+    # Import annotations lazily to avoid polluting the `awx.settings` namespace
+    # and causing circular imports
+    from awx.main.tasks import log_celery_failure
+    return log_celery_failure(*args)
+
+
+CELERY_ANNOTATIONS = {'*': {'on_failure': log_celery_failure}}
 
 CELERYBEAT_SCHEDULER = 'celery.beat.PersistentScheduler'
 CELERYBEAT_MAX_LOOP_INTERVAL = 60
@@ -511,22 +523,26 @@ AWX_INCONSISTENT_TASK_INTERVAL = 60 * 3
 # Celery queues that will always be listened to by celery workers
 # Note: Broadcast queues have unique, auto-generated names, with the alias
 # property value of the original queue name.
-AWX_CELERY_QUEUES_STATIC = ['tower_broadcast_all',]
+AWX_CELERY_QUEUES_STATIC = [
+    six.text_type(CELERY_DEFAULT_QUEUE),
+]
+
+AWX_CELERY_BCAST_QUEUES_STATIC = [
+    six.text_type('tower_broadcast_all'),
+]
+
+ASGI_AMQP = {
+    'INIT_FUNC': 'awx.prepare_env',
+    'MODEL': 'awx.main.models.channels.ChannelGroup',
+}
 
 # Django Caching Configuration
-if is_testing():
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        },
-    }
-else:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
-            'LOCATION': 'memcached:11211',
-        },
-    }
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+        'LOCATION': 'memcached:11211',
+    },
+}
 
 # Social Auth configuration.
 SOCIAL_AUTH_STRATEGY = 'social_django.strategy.DjangoStrategy'
@@ -629,6 +645,14 @@ CAPTURE_JOB_EVENT_HOSTS = False
 
 # Rebuild Host Smart Inventory memberships.
 AWX_REBUILD_SMART_MEMBERSHIP = False
+
+# By default, allow arbitrary Jinja templating in extra_vars defined on a Job Template
+ALLOW_JINJA_IN_EXTRA_VARS = 'template'
+
+# Enable dynamically pulling roles from a requirement.yml file
+# when updating SCM projects 
+# Note: This setting may be overridden by database settings.
+AWX_ROLES_ENABLED = True
 
 # Enable bubblewrap support for running jobs (playbook runs only).
 # Note: This setting may be overridden by database settings.
@@ -888,8 +912,7 @@ SATELLITE6_GROUP_FILTER = r'^.+$'
 SATELLITE6_HOST_FILTER = r'^.+$'
 SATELLITE6_EXCLUDE_EMPTY_GROUPS = True
 SATELLITE6_INSTANCE_ID_VAR = 'foreman.id'
-SATELLITE6_GROUP_PREFIX = 'foreman_'
-SATELLITE6_GROUP_PATTERNS = ["{app}-{tier}-{color}", "{app}-{color}", "{app}", "{tier}"]
+# SATELLITE6_GROUP_PREFIX and SATELLITE6_GROUP_PATTERNS defined in source vars
 
 # ---------------------
 # ----- CloudForms -----
@@ -948,6 +971,7 @@ FACT_CACHE_PORT = 6564
 
 # Note: This setting may be overridden by database settings.
 ORG_ADMINS_CAN_SEE_ALL_USERS = True
+MANAGE_ORGANIZATION_AUTH = True
 
 # Note: This setting may be overridden by database settings.
 TOWER_ADMIN_ALERTS = True
@@ -984,6 +1008,9 @@ LOGGING = {
         'require_debug_true_or_test': {
             '()': 'awx.main.utils.RequireDebugTrueOrTest',
         },
+        'external_log_enabled': {
+            '()': 'awx.main.utils.filters.ExternalLoggerEnabled'
+        },
     },
     'formatters': {
         'simple': {
@@ -1017,11 +1044,10 @@ LOGGING = {
             'class': 'logging.NullHandler',
             'formatter': 'simple',
         },
-        'http_receiver': {
-            'class': 'awx.main.utils.handlers.HTTPSNullHandler',
-            'level': 'DEBUG',
+        'external_logger': {
+            'class': 'awx.main.utils.handlers.AWXProxyHandler',
             'formatter': 'json',
-            'host': '',
+            'filters': ['external_log_enabled'],
         },
         'mail_admins': {
             'level': 'ERROR',
@@ -1114,7 +1140,7 @@ LOGGING = {
             'handlers': ['console'],
         },
         'awx': {
-            'handlers': ['console', 'file', 'tower_warnings'],
+            'handlers': ['console', 'file', 'tower_warnings', 'external_logger'],
             'level': 'DEBUG',
         },
         'awx.conf': {
@@ -1139,15 +1165,12 @@ LOGGING = {
             'propagate': False
         },
         'awx.main.tasks': {
-            'handlers': ['task_system'],
+            'handlers': ['task_system', 'external_logger'],
             'propagate': False
         },
         'awx.main.scheduler': {
-            'handlers': ['task_system'],
+            'handlers': ['task_system', 'external_logger'],
             'propagate': False
-        },
-        'awx.main.consumers': {
-            'handlers': ['null']
         },
         'awx.main.access': {
             'handlers': ['null'],
@@ -1162,7 +1185,7 @@ LOGGING = {
             'propagate': False,
         },
         'awx.analytics': {
-            'handlers': ['http_receiver'],
+            'handlers': ['external_logger'],
             'level': 'INFO',
             'propagate': False
         },

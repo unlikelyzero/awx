@@ -20,7 +20,10 @@ export default ['i18n', function(i18n) {
             stateTree: 'users',
             forceListeners: true,
             tabs: true,
-
+            messageBar: {
+                ngShow: 'isOrgAdmin && !canEdit',
+                message: i18n._("Contact your System Administrator to grant you the appropriate permissions to add and edit Users and Teams.")
+            },
             fields: {
                 first_name: {
                     label: i18n._('First Name'),
@@ -33,8 +36,7 @@ export default ['i18n', function(i18n) {
                     label: i18n._('Last Name'),
                     type: 'text',
                     ngDisabled: '!(user_obj.summary_fields.user_capabilities.edit || canAdd)',
-                    required: true,
-                    capitalize: true
+                    required: true
                 },
                 organization: {
                     label: i18n._('Organization'),
@@ -73,7 +75,7 @@ export default ['i18n', function(i18n) {
                         reqExpression: "isAddForm",
                         init: false
                     },
-                    ngChange: "clearPWConfirm('password_confirm')",
+                    ngChange: "clearPWConfirm()",
                     autocomplete: false,
                     ngDisabled: '!(user_obj.summary_fields.user_capabilities.edit || canAdd)'
                 },
@@ -212,8 +214,8 @@ export default ['i18n', function(i18n) {
                             ngClick: "$state.go('.add')",
                             label: 'Add',
                             awToolTip: i18n._('Grant Permission'),
-                            actionClass: 'btn List-buttonSubmit',
-                            buttonContent: '&#43; ' + i18n._('ADD PERMISSIONS'),
+                            actionClass: 'at-Button--add',
+                            actionId: 'button-add',
                             ngShow: '(!is_superuser && (user_obj.summary_fields.user_capabilities.edit || canAdd))'
                         }
                     },
@@ -227,6 +229,11 @@ export default ['i18n', function(i18n) {
                         }
                     },
                     //hideOnSuperuser: true // RBAC defunct
+                },
+                tokens: {
+                    ngIf: 'isCurrentlyLoggedInUser',
+                    title: i18n._('Tokens'),
+                    skipGenerator: true,
                 }
             }
 

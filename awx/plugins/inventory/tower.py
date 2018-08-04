@@ -54,7 +54,14 @@ def parse_configuration():
     host_name = os.environ.get("TOWER_HOST", None)
     username = os.environ.get("TOWER_USERNAME", None)
     password = os.environ.get("TOWER_PASSWORD", None)
-    ignore_ssl = os.environ.get("TOWER_IGNORE_SSL", "1").lower() in ("1", "yes", "true")
+    ignore_ssl = False
+    ssl_negative_var = os.environ.get("TOWER_IGNORE_SSL", None)
+    if ssl_negative_var:
+        ignore_ssl = ssl_negative_var.lower() in ("1", "yes", "true")
+    else:
+        ssl_positive_var = os.environ.get("TOWER_VERIFY_SSL", None)
+        if ssl_positive_var:
+            ignore_ssl = ssl_positive_var.lower() not in ('true', '1', 't', 'y', 'yes')
     inventory = os.environ.get("TOWER_INVENTORY", None)
     license_type = os.environ.get("TOWER_LICENSE_TYPE", "enterprise")
 
@@ -83,6 +90,7 @@ def read_tower_inventory(tower_host, tower_user, tower_pass, inventory, license_
         tower_host = "https://{}".format(tower_host)
     inventory_url = urljoin(tower_host, "/api/v2/inventories/{}/script/?hostvars=1&towervars=1&all=1".format(inventory.replace('/', '')))
     config_url = urljoin(tower_host, "/api/v2/config/")
+    reason = None
     try:
         if license_type != "open":
             config_response = requests.get(config_url,
@@ -99,14 +107,16 @@ def read_tower_inventory(tower_host, tower_user, tower_pass, inventory, license_
         response = requests.get(inventory_url,
                                 auth=HTTPBasicAuth(tower_user, tower_pass),
                                 verify=not ignore_ssl)
+        try:
+            json_response = response.json()
+        except (ValueError, TypeError) as e:
+            reason = "Failed to parse json from host: {}".format(e)
         if response.ok:
-            return response.json()
-        json_reason = response.json()
-        reason = json_reason.get('detail', 'Retrieving Tower Inventory Failed')
+            return json_response
+        if not reason:
+            reason = json_response.get('detail', 'Retrieving Tower Inventory Failed')
     except requests.ConnectionError as e:
         reason = "Connection to remote host failed: {}".format(e)
-    except json.JSONDecodeError as e:
-        reason = "Failed to parse json from host: {}".format(e)
     raise RuntimeError(reason)
 
 

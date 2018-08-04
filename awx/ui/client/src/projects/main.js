@@ -13,7 +13,13 @@ import { N_ } from '../i18n';
 import GetProjectPath from './factories/get-project-path.factory';
 import GetProjectIcon from './factories/get-project-icon.factory';
 import GetProjectToolTip from './factories/get-project-tool-tip.factory';
-import ProjectsTemplatesRoute from './projects-templates.route';
+import {
+    projectsSchedulesListRoute,
+    projectsSchedulesAddRoute,
+    projectsSchedulesEditRoute
+} from '../scheduler/schedules.route';
+
+import ProjectsTemplatesRoute from '~features/templates/routes/projectsTemplatesList.route';
 import ProjectsStrings from './projects.strings';
 
 export default
@@ -65,6 +71,7 @@ angular.module('Projects', [])
                 let projectTree = stateDefinitions.generateTree({
                     parent: 'projects', // top-most node in the generated tree (will replace this state definition)
                     modes: ['add', 'edit'],
+                    generateSchedulerView: true,
                     list: 'ProjectList',
                     form: 'ProjectsForm',
                     controllers: {
@@ -84,6 +91,9 @@ angular.module('Projects', [])
                     ncyBreadcrumb: {
                         label: N_('PROJECTS')
                     },
+                    breadcrumbs: {
+                        edit: '{{breadcrumb.project_name}}'
+                    },
                     resolve: {
                         add: projectResolve,
                         edit: projectResolve
@@ -98,6 +108,9 @@ angular.module('Projects', [])
                             return result.concat(definition.states);
                         }, [
                             stateExtender.buildDefinition(ProjectsTemplatesRoute),
+                            stateExtender.buildDefinition(projectsSchedulesListRoute),
+                            stateExtender.buildDefinition(projectsSchedulesAddRoute),
+                            stateExtender.buildDefinition(projectsSchedulesEditRoute)
                         ])
                     };
                 });

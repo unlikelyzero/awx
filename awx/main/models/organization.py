@@ -6,6 +6,7 @@
 # Django
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.contrib.auth.models import User
 from django.contrib.sessions.models import Session
 from django.utils.timezone import now as tz_now
@@ -19,12 +20,13 @@ from awx.main.models.rbac import (
     ROLE_SINGLETON_SYSTEM_ADMINISTRATOR,
     ROLE_SINGLETON_SYSTEM_AUDITOR,
 )
-from awx.main.models.mixins import ResourceMixin, CustomVirtualEnvMixin
+from awx.main.models.unified_jobs import UnifiedJob
+from awx.main.models.mixins import ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin
 
 __all__ = ['Organization', 'Team', 'Profile', 'UserSessionMembership']
 
 
-class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVirtualEnvMixin):
+class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin):
     '''
     An organization is the basic unit of multi-tenancy divisions
     '''
@@ -64,7 +66,7 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
     member_role = ImplicitRoleField(
         parent_role=['admin_role', 'execute_role', 'project_admin_role',
                      'inventory_admin_role', 'workflow_admin_role',
-                     'notification_admin_role']
+                     'notification_admin_role', 'credential_admin_role']
     )
     read_role = ImplicitRoleField(
         parent_role=['member_role', 'auditor_role'],
@@ -74,8 +76,16 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
     def get_absolute_url(self, request=None):
         return reverse('api:organization_detail', kwargs={'pk': self.pk}, request=request)
 
-    def __unicode__(self):
-        return self.name
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        project_ids = self.projects.all().values_list('id')
+        return UnifiedJob.objects.non_polymorphic().filter(
+            Q(Job___project__in=project_ids) |
+            Q(ProjectUpdate___project__in=project_ids) |
+            Q(InventoryUpdate___inventory_source__inventory__organization=self)
+        )
 
 
 class Team(CommonModelNameNotUnique, ResourceMixin):

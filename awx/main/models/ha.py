@@ -21,6 +21,7 @@ from awx.main.models.jobs import Job
 from awx.main.models.projects import ProjectUpdate
 from awx.main.models.unified_jobs import UnifiedJob
 from awx.main.utils import get_cpu_capacity, get_mem_capacity, get_system_task_capacity
+from awx.main.models.mixins import RelatedJobsMixin
 
 __all__ = ('Instance', 'InstanceGroup', 'JobOrigin', 'TowerScheduleState',)
 
@@ -84,6 +85,10 @@ class Instance(models.Model):
         # NOTE: TODO: Likely to repurpose this once standalone ramparts are a thing
         return "awx"
 
+    @property
+    def jobs_running(self):
+        return UnifiedJob.objects.filter(execution_node=self.hostname, status__in=('running', 'waiting',)).count()
+
     def is_lost(self, ref_time=None, isolated=False):
         if ref_time is None:
             ref_time = now()
@@ -110,7 +115,7 @@ class Instance(models.Model):
 
     
 
-class InstanceGroup(models.Model):
+class InstanceGroup(models.Model, RelatedJobsMixin):
     """A model representing a Queue/Group of AWX Instances."""
     objects = InstanceGroupManager()
 
@@ -152,6 +157,13 @@ class InstanceGroup(models.Model):
     def capacity(self):
         return sum([inst.capacity for inst in self.instances.all()])
 
+    '''
+    RelatedJobsMixin
+    '''
+    def _get_related_jobs(self):
+        return UnifiedJob.objects.filter(instance_group=self)
+
+
     class Meta:
         app_label = 'main'
 
@@ -180,9 +192,8 @@ class JobOrigin(models.Model):
 
 @receiver(post_save, sender=InstanceGroup)
 def on_instance_group_saved(sender, instance, created=False, raw=False, **kwargs):
-    if created:
-        from awx.main.tasks import apply_cluster_membership_policies
-        connection.on_commit(lambda: apply_cluster_membership_policies.apply_async())
+    from awx.main.tasks import apply_cluster_membership_policies
+    connection.on_commit(lambda: apply_cluster_membership_policies.apply_async())
 
 
 @receiver(post_save, sender=Instance)

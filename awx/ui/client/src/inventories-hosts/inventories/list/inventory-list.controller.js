@@ -77,7 +77,7 @@ function InventoriesList($scope,
         Wait('start');
         new Inventory('get', inventory.id)
             .then(model => model.copy())
-            .then(copy => $scope.editInventory(copy))
+            .then(copy => $scope.editInventory(copy, true))
             .catch(({ data, status }) => {
                 const params = { hdr: 'Error!', msg: `Call to copy failed. Return status: ${status}` };
                 ProcessErrors($scope, data, status, null, params);
@@ -85,12 +85,17 @@ function InventoriesList($scope,
             .finally(() => Wait('stop'));
     };
 
-    $scope.editInventory = function (inventory) {
+    $scope.goToGraph = function(inventory){
+         $state.go('inventories.edit.networking', {inventory_id: inventory.id, inventory_name: inventory.name});
+    };
+
+    $scope.editInventory = function (inventory, reload) {
+        const goOptions = reload ? { reload: true } : null;
         if(inventory.kind && inventory.kind === 'smart') {
-            $state.go('inventories.editSmartInventory', {smartinventory_id: inventory.id});
+            $state.go('inventories.editSmartInventory', {smartinventory_id: inventory.id}, goOptions);
         }
         else {
-            $state.go('inventories.edit', {inventory_id: inventory.id});
+            $state.go('inventories.edit', {inventory_id: inventory.id}, goOptions);
         }
     };
 

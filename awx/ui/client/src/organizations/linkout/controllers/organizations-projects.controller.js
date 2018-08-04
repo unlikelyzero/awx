@@ -35,8 +35,8 @@ export default ['$scope', '$rootScope', '$log', '$stateParams', 'Rest', 'Alert',
                     $scope.projects.forEach(function(project, i) {
                         $scope.projects[i].statusIcon = GetProjectIcon(project.status);
                         $scope.projects[i].statusTip = GetProjectToolTip(project.status);
-                        $scope.projects[i].scm_update_tooltip = "Start an SCM update";
-                        $scope.projects[i].scm_schedule_tooltip = "Schedule future SCM updates";
+                        $scope.projects[i].scm_update_tooltip = "Get latest SCM revision";
+                        $scope.projects[i].scm_schedule_tooltip = "Schedule SCM revision updates";
                         $scope.projects[i].scm_type_class = "";
 
                         if (project.status === 'failed' && project.summary_fields.last_update && project.summary_fields.last_update.status === 'canceled') {
@@ -187,7 +187,7 @@ export default ['$scope', '$rootScope', '$log', '$stateParams', 'Rest', 'Alert',
                 // Grab the id from summary_fields
                 var id = (data.summary_fields.current_update) ? data.summary_fields.current_update.id : data.summary_fields.last_update.id;
 
-                $state.go('scmUpdateStdout', { id: id });
+                $state.go('output', { id: id, type: 'project' });
 
             } else {
                 Alert('No Updates Available', 'There is no SCM update information available for this project. An update has not yet been ' +
@@ -301,7 +301,7 @@ export default ['$scope', '$rootScope', '$log', '$stateParams', 'Rest', 'Alert',
         $scope.editSchedules = function(id) {
             var project = Find({ list: $scope.projects, key: 'id', val: id });
             if (!(project.scm_type === "Manual" || Empty(project.scm_type)) && !(project.status === 'updating' || project.status === 'running' || project.status === 'pending')) {
-                $state.go('projectSchedules', { id: id });
+                $state.go('projects.edit.schedules', { project_id: id });
             }
         };
 

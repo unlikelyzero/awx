@@ -8,6 +8,7 @@ import tempfile
 
 from django.conf import settings
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper
+import mock
 import pytest
 
 from awx.api.versioning import reverse
@@ -169,7 +170,7 @@ def test_text_stdout_with_max_stdout(sqlite_copy_expert, get, admin):
     response = get(url, user=admin, expect=200)
     assert response.data['result_stdout'] == (
         'Standard Output too large to display ({actual} bytes), only download '
-        'supported for sizes over {max} bytes'.format(
+        'supported for sizes over {max} bytes.'.format(
             actual=total_bytes,
             max=settings.STDOUT_MAX_BYTES_DISPLAY
         )
@@ -184,6 +185,7 @@ def test_text_stdout_with_max_stdout(sqlite_copy_expert, get, admin):
     [_mk_inventory_update, InventoryUpdateEvent, 'inventory_update', 'api:inventory_update_stdout'],
 ])
 @pytest.mark.parametrize('fmt', ['txt', 'ansi'])
+@mock.patch('awx.main.redact.UriCleaner.SENSITIVE_URI_PATTERN', mock.Mock(**{'search.return_value': None}))  # really slow for large strings
 def test_max_bytes_display(sqlite_copy_expert, Parent, Child, relation, view, fmt, get, admin):
     job = Parent()
     job.save()
@@ -195,7 +197,7 @@ def test_max_bytes_display(sqlite_copy_expert, Parent, Child, relation, view, fm
     response = get(url + '?format={}'.format(fmt), user=admin, expect=200)
     assert response.content == (
         'Standard Output too large to display ({actual} bytes), only download '
-        'supported for sizes over {max} bytes'.format(
+        'supported for sizes over {max} bytes.'.format(
             actual=total_bytes,
             max=settings.STDOUT_MAX_BYTES_DISPLAY
         )
@@ -231,6 +233,7 @@ def test_legacy_result_stdout_text_fallback(Cls, view, fmt, get, admin):
     [_mk_inventory_update, 'api:inventory_update_stdout']
 ])
 @pytest.mark.parametrize('fmt', ['txt', 'ansi'])
+@mock.patch('awx.main.redact.UriCleaner.SENSITIVE_URI_PATTERN', mock.Mock(**{'search.return_value': None}))  # really slow for large strings
 def test_legacy_result_stdout_with_max_bytes(Cls, view, fmt, get, admin):
     job = Cls()
     job.save()
@@ -243,7 +246,7 @@ def test_legacy_result_stdout_with_max_bytes(Cls, view, fmt, get, admin):
     response = get(url + '?format={}'.format(fmt), user=admin, expect=200)
     assert response.content == (
         'Standard Output too large to display ({actual} bytes), only download '
-        'supported for sizes over {max} bytes'.format(
+        'supported for sizes over {max} bytes.'.format(
             actual=total_bytes,
             max=settings.STDOUT_MAX_BYTES_DISPLAY
         )
@@ -282,7 +285,7 @@ def test_unicode_with_base64_ansi(sqlite_copy_expert, get, admin):
     url = reverse(
         'api:job_stdout',
         kwargs={'pk': job.pk}
-    ) + '?format=json&content_encoding=base64&content_format=ansi'
+    ) + '?format=json&content_encoding=base64'
 
     response = get(url, user=admin, expect=200)
     content = base64.b64decode(json.loads(response.content)['content'])

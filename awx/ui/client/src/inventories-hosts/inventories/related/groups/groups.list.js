@@ -15,7 +15,7 @@
         hover: true,
         multiSelect: true,
         trackBy: 'group.id',
-        basePath:  'api/v2/inventories/{{$stateParams.inventory_id}}/root_groups/',
+        basePath:  'api/v2/inventories/{{$stateParams.inventory_id}}/groups/',
 
         fields: {
             failed_hosts: {
@@ -67,8 +67,8 @@
                 mode: 'all',
                 ngClick: "createGroup()",
                 awToolTip: i18n._("Create a new group"),
-                actionClass: 'btn List-buttonSubmit',
-                buttonContent: '&#43; ' + i18n._('ADD GROUP'),
+                actionClass: 'at-Button--add',
+                actionId: 'button-add',
                 ngShow: 'canAdd',
                 dataPlacement: "top",
             }

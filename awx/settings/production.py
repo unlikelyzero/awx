@@ -68,8 +68,6 @@ SERVICE_NAME_DICT = {
     "channels": "awx-channels-worker",
     "uwsgi": "awx-uwsgi",
     "daphne": "awx-daphne"}
-# Used for sending commands in automatic restart
-UWSGI_FIFO_LOCATION = '/var/lib/awx/awxfifo'
 
 # Store a snapshot of default settings at this point before loading any
 # customizable config files.
@@ -88,8 +86,6 @@ settings_files = os.path.join(settings_dir, '*.py')
 # environment, defaulting to /etc/tower/settings.py.
 settings_file = os.environ.get('AWX_SETTINGS_FILE',
                                '/etc/tower/settings.py')
-
-MIDDLEWARE_CLASSES = ('awx.main.middleware.MigrationRanCheckMiddleware',) + MIDDLEWARE_CLASSES
 
 # Attempt to load settings from /etc/tower/settings.py first, followed by
 # /etc/tower/conf.d/*.py.

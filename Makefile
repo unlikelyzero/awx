@@ -72,7 +72,7 @@ UI_RELEASE_FLAG_FILE = awx/ui/.release_built
 
 I18N_FLAG_FILE = .i18n_built
 
-.PHONY: clean clean-tmp clean-venv requirements requirements_dev \
+.PHONY: awx-link clean clean-tmp clean-venv requirements requirements_dev \
 	develop refresh adduser migrate dbchange dbshell runserver celeryd \
 	receiver test test_unit test_ansible test_coverage coverage_html \
 	dev_build release_build release_clean sdist \
@@ -184,7 +184,6 @@ requirements_awx: virtualenv_awx
 
 requirements_awx_dev:
 	$(VENV_BASE)/awx/bin/pip install -r requirements/requirements_dev.txt
-	$(VENV_BASE)/awx/bin/pip uninstall --yes -r requirements/requirements_dev_uninstall.txt
 
 requirements: requirements_ansible requirements_awx
 
@@ -235,7 +234,7 @@ migrate:
 	if [ "$(VENV_BASE)" ]; then \
 		. $(VENV_BASE)/awx/bin/activate; \
 	fi; \
-	$(MANAGEMENT_COMMAND) migrate --noinput --fake-initial
+	$(MANAGEMENT_COMMAND) migrate --noinput
 
 # Run after making changes to the models to create a new migration.
 dbchange:
@@ -274,7 +273,7 @@ supervisor:
 	supervisord --configuration /supervisor.conf --pidfile=/tmp/supervisor_pid
 
 # Alternate approach to tmux to run all development tasks specified in
-# Procfile.  https://youtu.be/OPMgaibszjk
+# Procfile.
 honcho:
 	@if [ "$(VENV_BASE)" ]; then \
 		. $(VENV_BASE)/awx/bin/activate; \
@@ -297,7 +296,7 @@ uwsgi: collectstatic
 	@if [ "$(VENV_BASE)" ]; then \
 		. $(VENV_BASE)/awx/bin/activate; \
 	fi; \
-    uwsgi -b 32768 --socket 127.0.0.1:8050 --module=awx.wsgi:application --home=/venv/awx --chdir=/awx_devel/ --vacuum --processes=5 --harakiri=120 --master --no-orphans --py-autoreload 1 --max-requests=1000 --stats /tmp/stats.socket --master-fifo=/awxfifo --lazy-apps --logformat "%(addr) %(method) %(uri) - %(proto) %(status)" --hook-accepting1-once="exec:/bin/sh -c '[ -f /tmp/celery_pid ] && kill -1 `cat /tmp/celery_pid` || true'"
+    uwsgi -b 32768 --socket 127.0.0.1:8050 --module=awx.wsgi:application --home=/venv/awx --chdir=/awx_devel/ --vacuum --processes=5 --harakiri=120 --master --no-orphans --py-autoreload 1 --max-requests=1000 --stats /tmp/stats.socket --lazy-apps --logformat "%(addr) %(method) %(uri) - %(proto) %(status)" --hook-accepting1-once="exec:/bin/sh -c '[ -f /tmp/celery_pid ] && kill -1 `cat /tmp/celery_pid` || true'"
 
 daphne:
 	@if [ "$(VENV_BASE)" ]; then \
@@ -368,19 +367,27 @@ swagger: reports
 
 check: flake8 pep8 # pyflakes pylint
 
-TEST_DIRS ?= awx/main/tests/unit awx/main/tests/functional awx/conf/tests awx/sso/tests
+awx-link:
+	cp -R /tmp/awx.egg-info /awx_devel/ || true
+	sed -i "s/placeholder/$(shell git describe --long | sed 's/\./\\./g')/" /awx_devel/awx.egg-info/PKG-INFO
+	cp /tmp/awx.egg-link /venv/awx/lib/python2.7/site-packages/awx.egg-link
+
+TEST_DIRS ?= awx/main/tests/unit awx/main/tests/functional awx/conf/tests awx/sso/tests awx/network_ui/tests/unit
+
 # Run all API unit tests.
-test: test_ansible
+test:
 	@if [ "$(VENV_BASE)" ]; then \
 		. $(VENV_BASE)/awx/bin/activate; \
 	fi; \
-	py.test $(TEST_DIRS)
+	py.test -n auto $(TEST_DIRS)
+
+test_combined: test_ansible test
 
 test_unit:
 	@if [ "$(VENV_BASE)" ]; then \
 		. $(VENV_BASE)/awx/bin/activate; \
 	fi; \
-	py.test awx/main/tests/unit awx/conf/tests/unit awx/sso/tests/unit
+	py.test awx/main/tests/unit awx/conf/tests/unit awx/sso/tests/unit awx/network_ui/tests/unit
 
 test_ansible:
 	@if [ "$(VENV_BASE)" ]; then \

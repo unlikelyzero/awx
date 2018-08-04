@@ -138,7 +138,7 @@ class CloudFormsInventory(object):
             warnings.warn("No username specified, you need to specify a CloudForms username.")
 
         if config.has_option('cloudforms', 'password'):
-            self.cloudforms_pw = config.get('cloudforms', 'password')
+            self.cloudforms_pw = config.get('cloudforms', 'password', raw=True)
         else:
             self.cloudforms_pw = None
 
@@ -468,7 +468,7 @@ class CloudFormsInventory(object):
         Converts 'bad' characters in a string to underscores so they can be used as Ansible groups
         """
         if self.cloudforms_clean_group_keys:
-            regex = "[^A-Za-z0-9\_]"
+            regex = r"[^A-Za-z0-9\_]"
             return re.sub(regex, "_", word.replace(" ", ""))
         else:
             return word
