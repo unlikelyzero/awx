@@ -44,8 +44,8 @@ module.exports = {
         // test settings defined above.
         cluster: {
             selenium_host: AWX_E2E_CLUSTER_HOST,
-            selenium_port: AWX_E2E_CLUSTER_PORT,
-            default_path_prefix: '/wd/hub',
+            selenium_port: '',
+            // default_path_prefix: '/wd/hub',
             test_workers: {
                 enabled: (AWX_E2E_CLUSTER_WORKERS > 0),
                 workers: AWX_E2E_CLUSTER_WORKERS
